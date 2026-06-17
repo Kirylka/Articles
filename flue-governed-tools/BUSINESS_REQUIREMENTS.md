@@ -144,8 +144,9 @@ external platform.
 - Tenant/customer **scope enforcement** (BR-1).
 - An **idempotency store** for external writes (BR-2).
 - A **hash-chained JSONL audit log** (BR-3).
-- A worked **example: telecom support agent** demonstrating scoped lookups, an
-  idempotent refund, and audit-chain verification.
+- A worked **example: support agent** demonstrating an `authorize` ownership
+  block (the Meta HTS case), scope enforcement, an idempotent refund, and
+  audit-chain verification.
 
 RBAC (BR-4) and approvals (BR-5) ship as **basic adapters**, not headline
 features.
@@ -159,8 +160,8 @@ runtimes, a formal policy DSL.
 
 - A Flue developer can wrap an existing tool and get BR-1/2/3 with only a few
   lines of configuration.
-- The telecom example demonstrably **blocks** a cross-tenant action,
-  **replays** a duplicate refund instead of re-issuing it, and **verifies** its
+- The example demonstrably **blocks** an unauthorized account action and a
+  cross-customer action, **replays** a duplicate refund instead of re-issuing it, and **verifies** its
   audit chain.
 - Tampering with any historical audit entry is detectable.
 - Positioning lands: readers understand this is in-process and Flue-native, not

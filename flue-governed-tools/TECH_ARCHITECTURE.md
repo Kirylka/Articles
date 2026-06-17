@@ -78,7 +78,7 @@ flue-governed-tools/
 │   ├── redaction.ts      Redactor + default PII redactor (FR-8)
 │   └── flue.ts           Flue adapter: shape + host-context resolution (C-2/3)
 ├── examples/
-│   └── telecom-support-agent.ts                     (FR-10.1)
+│   └── support-agent.ts                             (FR-10.1)
 └── test/
 ```
 

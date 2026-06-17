@@ -35,7 +35,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "test": "npm run build && node --test \"dist/test/**/*.test.js\"",
-    "example": "npm run build && node dist/examples/telecom-support-agent.js"
+    "example": "npm run build && node dist/examples/support-agent.js"
   },
   "devDependencies": {
     "@flue/runtime": "^1.0.0-beta.1",

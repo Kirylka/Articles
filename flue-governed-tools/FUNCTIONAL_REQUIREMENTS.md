@@ -96,7 +96,7 @@ requirement(s) it satisfies (BR-1 … BR-7).
 
 | ID | Requirement | Traces |
 | --- | --- | --- |
-| **FR-10.1** | The repo MUST include a runnable **telecom support agent** example demonstrating: a scoped read, an idempotent refund, a blocked cross-tenant action, and audit-chain verification. | BR-1..3 |
+| **FR-10.1** | The repo MUST include a runnable **support agent** example demonstrating: the fail-closed definition guard, an `authorize` ownership block (the Meta HTS case), a blocked cross-customer action, an idempotent refund replay, an approval decision, and audit-chain verification. | BR-1..3 |
 
 ---
 

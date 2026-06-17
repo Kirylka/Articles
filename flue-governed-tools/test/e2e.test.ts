@@ -1,7 +1,11 @@
 /**
- * End-to-end tests: drive the whole stack the way Flue would — a trusted
+ * End-to-end tests: drive the whole stack the way a host would — a trusted
  * context bound for the duration of a run, governed tools invoked by name, a
  * file-backed tamper-evident audit log, and a real idempotency store.
+ *
+ * Mirrors the README/example: a `reset_password` tool gated by `authorize`
+ * (the check Meta's High Touch Support was missing) and an `issue_refund` tool
+ * gated by `scope` + `approval` + `idempotency`.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -19,6 +23,11 @@ import {
   type FlueCompatibleTool,
   type TrustedContext,
 } from "../src/index.js";
+import {
+  AuthorizationDeniedError,
+  GovernanceConfigError,
+  ScopeViolationError,
+} from "../src/errors.js";
 
 function buildAgent(auditPath: string) {
   const contextStore = new ContextStore();
@@ -38,90 +47,130 @@ function buildAgent(auditPath: string) {
     approval: approvals,
   });
 
+  let resetLinks = 0;
   let refundsIssued = 0;
-  const lookup = toolkit.defineGovernedTool({
-    name: "lookup_account",
-    description: "lookup",
-    requireRoles: ["support_agent"],
-    scope: (a: { customerId: string }) => `customer:${a.customerId}`,
-    execute: (a) => ({ customerId: a.customerId }),
+
+  const resetPassword = toolkit.defineGovernedTool<{ accountId: string }>({
+    name: "reset_password",
+    description: "send a reset link",
+    sideEffect: true,
+    // Caller may only reset an account they control.
+    authorize: (a, ctx) => a.accountId === ctx.actor.id,
+    idempotency: { key: (a) => `reset:${a.accountId}` },
+    execute: (a) => {
+      resetLinks += 1;
+      return `reset link sent for ${a.accountId}`;
+    },
   });
-  interface RefundArgs {
+
+  const refund = toolkit.defineGovernedTool<{
     customerId: string;
     amount: number;
     refundId: string;
-  }
-  const refund = toolkit.defineGovernedTool<RefundArgs>({
+  }>({
     name: "issue_refund",
     description: "refund",
     sideEffect: true,
     requireRoles: ["support_agent"],
     scope: (a) => `customer:${a.customerId}`,
-    idempotency: {
-      key: (a) => `refund:${a.customerId}:${a.refundId}`,
-    },
+    idempotency: { key: (a) => `refund:${a.customerId}:${a.refundId}` },
     approval: (a) => (a.amount > 50 ? "over $50" : false),
     execute: () => {
       refundsIssued += 1;
-      return { settled: true };
+      return "refunded";
     },
   });
 
   const tools = new Map<string, FlueCompatibleTool>([
-    [lookup.name, lookup],
+    [resetPassword.name, resetPassword],
     [refund.name, refund],
   ]);
 
   const runAs = <T>(ctx: TrustedContext, fn: () => Promise<T>) =>
     contextStore.run(ctx, fn);
-  const call = (name: string, args: unknown) =>
-    tools.get(name)!.execute(args);
+  const call = (name: string, args: unknown) => tools.get(name)!.execute(args);
 
-  return { audit, runAs, call, refunds: () => refundsIssued };
+  return { toolkit, audit, runAs, call, resets: () => resetLinks, refunds: () => refundsIssued };
 }
 
-test("e2e: full support-agent run enforces scope, idempotency and audit", async () => {
+const caller: TrustedContext = {
+  actor: { id: "c-100", roles: ["support_agent"] },
+  tenantId: "acme",
+  scopes: ["customer:c-100"],
+};
+
+test("e2e: a full run enforces authorize, scope, idempotency and audit", async () => {
   const path = join(tmpdir(), `e2e-${Date.now()}-${Math.random()}.jsonl`);
   try {
     const app = buildAgent(path);
-    const acme: TrustedContext = {
-      actor: { id: "agent-1", roles: ["support_agent"] },
-      tenantId: "acme",
-      scopes: ["customer:c-100"],
-    };
 
-    await app.runAs(acme, async () => {
-      await app.call("lookup_account", { customerId: "c-100" });
+    await app.runAs(caller, async () => {
+      // reset own account -> allowed
+      await app.call("reset_password", { accountId: "c-100" });
+      // reset someone else's account -> blocked by authorize (the Meta case)
+      await assert.rejects(
+        app.call("reset_password", { accountId: "victim" }),
+        AuthorizationDeniedError,
+      );
+      // refund self -> allowed
       await app.call("issue_refund", {
         customerId: "c-100",
         amount: 40,
         refundId: "r-1",
       });
-      // duplicate -> replay, must NOT re-issue
+      // duplicate refund -> replay, must NOT re-issue
       await app.call("issue_refund", {
         customerId: "c-100",
         amount: 40,
         refundId: "r-1",
       });
-      // cross-tenant / out-of-scope -> blocked
+      // cross-customer -> blocked by scope
       await assert.rejects(
         app.call("issue_refund", {
           customerId: "c-999",
           amount: 10,
           refundId: "r-9",
         }),
+        ScopeViolationError,
       );
     });
 
-    assert.equal(app.refunds(), 1, "refund side effect runs exactly once");
+    assert.equal(app.resets(), 1, "one reset link, not two");
+    assert.equal(app.refunds(), 1, "refund runs exactly once");
 
     const entries = await app.audit.entries();
-    assert.equal(entries.length, 4);
     assert.deepEqual(
-      entries.map((e) => `${e.decision}/${e.outcome}`),
-      ["allow/success", "allow/success", "allow/replayed", "deny/denied"],
+      entries.map((e) => `${e.tool}:${e.decision}/${e.outcome}`),
+      [
+        "reset_password:allow/success",
+        "reset_password:deny/denied",
+        "issue_refund:allow/success",
+        "issue_refund:allow/replayed",
+        "issue_refund:deny/denied",
+      ],
     );
+    assert.equal(entries[1]!.error, "authorization_denied");
+    assert.equal(entries[4]!.error, "scope_violation");
     assert.deepEqual(app.audit.verify(), { valid: true });
+  } finally {
+    rmSync(path, { force: true });
+  }
+});
+
+test("e2e: defining an ungated side-effect tool is refused", () => {
+  const path = join(tmpdir(), `e2e-guard-${Date.now()}-${Math.random()}.jsonl`);
+  try {
+    const app = buildAgent(path);
+    assert.throws(
+      () =>
+        app.toolkit.defineGovernedTool({
+          name: "delete_account",
+          description: "danger",
+          sideEffect: true,
+          execute: () => "gone",
+        }),
+      GovernanceConfigError,
+    );
   } finally {
     rmSync(path, { force: true });
   }
@@ -131,13 +180,8 @@ test("e2e: tampering with the persisted audit file is detected", async () => {
   const path = join(tmpdir(), `e2e-tamper-${Date.now()}-${Math.random()}.jsonl`);
   try {
     const app = buildAgent(path);
-    const acme: TrustedContext = {
-      actor: { id: "agent-1", roles: ["support_agent"] },
-      tenantId: "acme",
-      scopes: ["customer:c-100"],
-    };
-    await app.runAs(acme, async () => {
-      await app.call("lookup_account", { customerId: "c-100" });
+    await app.runAs(caller, async () => {
+      await app.call("reset_password", { accountId: "c-100" });
       await app.call("issue_refund", {
         customerId: "c-100",
         amount: 40,

@@ -214,9 +214,12 @@ setup and no API key:
 npm run example
 ```
 
-It walks through a refund tool: a cross-tenant call gets refused, a duplicate
-refund replays instead of paying twice, an over-threshold refund waits for
-approval, and the audit chain checks out clean at the end.
+It's the same `reset_password` tool from above plus a refund tool, and it walks
+through the whole story: defining an ungated side-effect tool is refused;
+resetting your own account works but resetting someone else's is blocked (the
+Meta case); a duplicate refund replays instead of paying twice; an
+over-threshold refund waits for approval; a cross-customer refund is denied; and
+the audit chain verifies clean at the end.
 
 ## Is this real yet
 

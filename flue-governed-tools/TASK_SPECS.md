@@ -25,7 +25,7 @@ T-0 scaffold
           └─ T-9 toolkit/pipeline  (integrates T-2..T-8)
               └─ T-10 flue adapter
                   └─ T-11 public surface (index)
-                      ├─ T-12 telecom example
+                      ├─ T-12 support-agent example
                       ├─ T-13 test suite
                       └─ T-14 README + docs
 ```
@@ -159,15 +159,17 @@ T-2 … T-8 are independent of one another and may be done in parallel after T-1
   HashChainAuditLog, ... } from "flue-governed-tools"` resolves with types.
 - **Traceability:** arch §3.
 
-## T-12 — Telecom support agent example
-- **Objective:** Runnable proof of the three hero guarantees.
-- **Deliverables:** `examples/telecom-support-agent.ts` — scoped account
-  lookup, idempotent refund (approval over a threshold), ticket update; a mock
-  `init()` standing in for Flue so it runs with zero deps; prints a blocked
-  cross-tenant attempt, a replayed refund, and an audit-chain verification.
+## T-12 — Support agent example
+- **Objective:** Runnable proof of the hero guarantees, mirroring the README.
+- **Deliverables:** `examples/support-agent.ts` — a `reset_password` tool gated
+  by `authorize` (caller must control the account) and an `issue_refund` tool
+  gated by `scope` + `approval` + `idempotency`; a mock `init()` standing in for
+  Flue so it runs with zero deps; also shows the fail-closed definition guard.
 - **Dependencies:** T-11.
-- **Acceptance:** `npm run example` shows: deny on cross-tenant, single refund
-  on duplicate call, `verifyChain` → valid.
+- **Acceptance:** `npm run example` shows: ungated side-effect tool refused at
+  definition, `authorize` block on another user's account, scope deny on another
+  customer, single refund on a duplicate call, approval allow/deny, and
+  `verifyChain` → valid.
 - **Traceability:** FR-10.1; arch §1.
 
 ## T-13 — Test suite
