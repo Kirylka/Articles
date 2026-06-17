@@ -137,6 +137,8 @@ for the conversation, reading it off `FlueContext`'s request:
 
 ```ts
 await ctx.run(
+  // No `scopes` needed here — this tool gates with `authorize`, not a scope
+  // list. Add scopes when a tool uses `scope` (see "What runs on every call").
   { actor: { id: "user-7", roles: ["account_holder"] }, tenantId: "app", scopes: [] },
   () => harness.prompt("I'm locked out, can you reset my password?"),
 );
@@ -219,8 +221,7 @@ runs and the outcome after; everything else writes a single record.
   thing twice.
 - **Audit** is a hash-chained record per call (two for side effects: intent +
   outcome). Edit any past line and `verifyChain()` tells you which one. Add an
-  HMAC key and a from-scratch
-  rewrite won't pass either.
+  HMAC key and a from-scratch rewrite won't pass either.
 - **RBAC**, **approval**, and **PII redaction** are there when you want them, as
   adapters rather than the main story.
 
