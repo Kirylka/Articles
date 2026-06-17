@@ -3,3 +3,7 @@ export * from "./errors.js";
 export * from "./context.js";
 export * from "./scope.js";
 export * from "./redaction.js";
+export * from "./audit.js";
+export * from "./idempotency.js";
+export * from "./rbac.js";
+export * from "./approval.js";
