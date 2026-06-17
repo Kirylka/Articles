@@ -205,6 +205,49 @@ import { redactString } from "@redactpii/node";
 createGovernedToolkit({ redaction: textRedactor((s) => redactString(s)), /* … */ });
 ```
 
+## Human-in-the-loop approval
+
+Real approvals take minutes or hours, so blocking the agent while you wait isn't
+an option. The approval adapter handles this by *suspending* instead of
+blocking: return `{ pending: true }` and the tool call throws an
+`ApprovalPendingError` rather than running. Your harness catches it, pauses the
+run (Flue can persist and resume a session), and shows the request to a human.
+When they decide, you resume — which re-invokes the tool, the adapter is asked
+again, and this time it answers for real.
+
+```ts
+const approval = {
+  async request(req) {
+    // Look up (or open) a ticket for this exact call.
+    const ticket = await tickets.findOrCreate(req.tool, req.args, req.ctx);
+
+    if (ticket.state === "approved") return { approved: true, approver: ticket.approver };
+    if (ticket.state === "rejected") return { approved: false, reason: ticket.reason };
+    return { pending: true, ref: ticket.id }; // still waiting → suspend
+  },
+};
+
+const toolkit = createGovernedToolkit({ context: ctx.resolver(), audit, approval });
+```
+
+```ts
+try {
+  await ctx.run(trusted, () => harness.prompt(text));
+} catch (err) {
+  if (err instanceof ApprovalPendingError) {
+    // Park the run against err.ref (a ticket id) and return to the user.
+    // A webhook from your approval system resumes it later.
+    await parkRun(err.ref);
+  } else throw err;
+}
+```
+
+Two things make this safe. The pending call writes a `defer`/`pending` line to
+the audit log, so a request waiting on a human is on the record, not in limbo.
+And because the tool re-runs every check on resume, pairing approval with an
+`idempotency` key means the eventual side effect still happens exactly once,
+even though the tool was invoked twice.
+
 ## See it run
 
 There's a small support-agent example with a mock model, so it runs with no

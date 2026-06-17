@@ -138,19 +138,23 @@ test("e2e: a full run enforces authorize, scope, idempotency and audit", async (
     assert.equal(app.resets(), 1, "one reset link, not two");
     assert.equal(app.refunds(), 1, "refund runs exactly once");
 
+    // Side-effecting executions write an `executing` intent record before the
+    // outcome; denials and replays write a single record.
     const entries = await app.audit.entries();
     assert.deepEqual(
       entries.map((e) => `${e.tool}:${e.decision}/${e.outcome}`),
       [
+        "reset_password:allow/executing",
         "reset_password:allow/success",
         "reset_password:deny/denied",
+        "issue_refund:allow/executing",
         "issue_refund:allow/success",
         "issue_refund:allow/replayed",
         "issue_refund:deny/denied",
       ],
     );
-    assert.equal(entries[1]!.error, "authorization_denied");
-    assert.equal(entries[4]!.error, "scope_violation");
+    assert.equal(entries[2]!.error, "authorization_denied");
+    assert.equal(entries[6]!.error, "scope_violation");
     assert.deepEqual(app.audit.verify(), { valid: true });
   } finally {
     rmSync(path, { force: true });
@@ -203,9 +207,10 @@ test("e2e: tampering with the persisted audit file is detected", async () => {
       .trim()
       .split("\n")
       .map((l) => JSON.parse(l) as AuditEntry);
+    const firstRefundIdx = entries.findIndex((e) => e.tool === "issue_refund");
     const result = verifyChain(entries);
     assert.equal(result.valid, false);
-    assert.equal(result.brokenAt, 1);
+    assert.equal(result.brokenAt, firstRefundIdx);
   } finally {
     rmSync(path, { force: true });
   }

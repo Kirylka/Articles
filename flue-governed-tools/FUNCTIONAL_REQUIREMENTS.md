@@ -55,6 +55,7 @@ requirement(s) it satisfies (BR-1 … BR-7).
 | **FR-5.2** | The approval decision MUST be delegated to a swappable adapter (the team's own workflow). The library MUST NOT implement an approval UI/workflow itself. | BR-5, BR-7 |
 | **FR-5.3** | If approval is required but no adapter is configured, the call MUST be denied (fail-closed). | BR-5 |
 | **FR-5.4** | The approval outcome (granted/denied, approver) MUST be recorded in the audit trail. | BR-3, BR-5 |
+| **FR-5.5** | The adapter MAY return a *pending* decision. The call MUST then suspend — raise `ApprovalPendingError` (carrying an optional `ref`) without executing — so the harness can pause and resume (re-invoking the tool) once decided. The deferral MUST be recorded. Pairing approval with `idempotency` MUST keep the eventual side effect at-most-once across the suspend/resume. | BR-5 |
 
 ### 1.6 Idempotency
 
@@ -71,7 +72,7 @@ requirement(s) it satisfies (BR-1 … BR-7).
 
 | ID | Requirement | Traces |
 | --- | --- | --- |
-| **FR-7.1** | Every governed tool call MUST append exactly one immutable audit record containing at least: timestamp, actor, tenant, tool, requested scopes, governance decision (allow/deny), outcome (success/error/denied/replayed), idempotency key (if any), and redacted arguments/result/error. | BR-3 |
+| **FR-7.1** | Every governed tool call MUST append immutable audit record(s) containing at least: timestamp, actor, tenant, tool, requested scopes, decision (allow/deny/defer), outcome (executing/success/error/denied/replayed/pending), idempotency key (if any), and redacted arguments/result/error. A **side-effecting** call MUST write an `executing` intent record *before* the handler runs and an outcome record after, so a side effect can never run unrecorded; denials, replays, and deferrals write a single record. | BR-3 |
 | **FR-7.2** | Each record MUST cryptographically chain to the previous one (store the prior record's hash) so that altering or removing any historical record is detectable. | BR-3 |
 | **FR-7.3** | Record hashing MUST be deterministic regardless of field ordering (canonical serialization). | BR-3 |
 | **FR-7.4** | The library MUST provide a function to verify a chain and report the first inconsistency. | BR-3 |
@@ -159,8 +160,10 @@ requirement(s) it satisfies (BR-1 … BR-7).
   governed tool is consumed as `defineTool(toolkit.defineGovernedTool(...))`.
 - **A-2:** `AsyncLocalStorage` (or an equivalent the host provides) is an
   acceptable mechanism for propagating trusted context within a run.
-- **A-3:** A single audit record per call (covering decision + outcome) is
-  sufficient for target compliance needs; pre/post split is deferred.
+- **A-3 (REVISED):** Side-effecting calls use a pre/post split (an `executing`
+  intent record before the handler, an outcome record after) so a side effect
+  cannot run unrecorded; non-side-effecting calls, denials, replays, and
+  deferrals write a single record.
 
 ## 4. Out of scope (v0.1)
 

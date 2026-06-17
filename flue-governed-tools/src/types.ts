@@ -58,13 +58,31 @@ export interface ExecutionContext extends TrustedContext {
   authorizedScopes: string[];
   /** The raw context object passed in by the host framework, if any. */
   host?: unknown;
+  /**
+   * Cancellation signal forwarded from the host (Flue passes one). Long-running
+   * handlers should honor it.
+   */
+  signal?: AbortSignal;
 }
 
-/** Result of a governance decision, recorded in the audit log. */
-export type Decision = "allow" | "deny";
+/**
+ * Result of a governance decision, recorded in the audit log. `defer` means the
+ * call was suspended awaiting approval.
+ */
+export type Decision = "allow" | "deny" | "defer";
 
-/** Outcome of a tool invocation, recorded in the audit log. */
-export type Outcome = "success" | "error" | "denied" | "replayed";
+/**
+ * Outcome of a tool invocation, recorded in the audit log. `executing` is the
+ * pre-execution intent record for a side-effecting call; `pending` marks a call
+ * suspended for approval.
+ */
+export type Outcome =
+  | "executing"
+  | "success"
+  | "error"
+  | "denied"
+  | "replayed"
+  | "pending";
 
 /**
  * A tool object shaped like Flue's `ToolDef` (`@flue/runtime`): a name, a
@@ -80,5 +98,9 @@ export interface FlueCompatibleTool {
   name: string;
   description: string;
   parameters: unknown;
-  execute: (args: unknown, hostContext?: unknown) => Promise<unknown>;
+  execute: (
+    args: unknown,
+    hostContext?: unknown,
+    signal?: AbortSignal,
+  ) => Promise<unknown>;
 }

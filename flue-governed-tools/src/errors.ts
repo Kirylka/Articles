@@ -86,6 +86,26 @@ export class GovernanceConfigError extends GovernanceError {
   }
 }
 
+/**
+ * Approval is required and not yet decided. This is a *suspend* signal, not a
+ * denial: the harness should pause the run (persisting whatever it needs) and
+ * resume — re-invoking the tool — once the approval is resolved. `ref` carries
+ * the adapter's handle for the pending approval (e.g. a ticket id).
+ */
+export class ApprovalPendingError extends GovernanceError {
+  readonly ref?: string;
+
+  constructor(tool: string, ref?: string, reason?: string) {
+    super(
+      "approval_pending",
+      `"${tool}" is awaiting approval` + (reason ? `: ${reason}` : ".") +
+        (ref ? ` (ref: ${ref})` : ""),
+      tool,
+    );
+    this.ref = ref;
+  }
+}
+
 /** Human (or external) approval was required and not granted. */
 export class ApprovalDeniedError extends GovernanceError {
   constructor(tool: string, reason?: string) {

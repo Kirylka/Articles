@@ -1,11 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createGovernedToolkit } from "../src/toolkit.js";
-import { InMemoryAuditLog } from "../src/audit.js";
+import { InMemoryAuditLog, type AuditLog } from "../src/audit.js";
 import { InMemoryIdempotencyStore } from "../src/idempotency.js";
 import {
   AccessDeniedError,
   ApprovalDeniedError,
+  ApprovalPendingError,
   AuthorizationDeniedError,
   GovernanceConfigError,
   MissingContextError,
@@ -109,10 +110,12 @@ test("idempotent side effect runs once and replays thereafter", async () => {
   assert.equal(runs, 1, "handler must run exactly once");
   assert.deepEqual(first, second);
 
+  // First call: intent (executing) + success. Second call: replayed.
   const entries = await audit.entries();
-  assert.equal(entries.length, 2);
-  assert.equal(entries[0]!.outcome, "success");
-  assert.equal(entries[1]!.outcome, "replayed");
+  assert.deepEqual(
+    entries.map((e) => e.outcome),
+    ["executing", "success", "replayed"],
+  );
 });
 
 test("handler error is audited as allow/error, key released, error propagated", async () => {
@@ -133,8 +136,10 @@ test("handler error is audited as allow/error, key released, error propagated", 
 
   await assert.rejects(() => tool.execute({}), /gateway down/);
   const entries = await audit.entries();
-  assert.equal(entries[0]!.decision, "allow");
-  assert.equal(entries[0]!.outcome, "error");
+  // Intent record first, then the error outcome.
+  assert.equal(entries[0]!.outcome, "executing");
+  assert.equal(entries[1]!.decision, "allow");
+  assert.equal(entries[1]!.outcome, "error");
 
   // key was released on failure -> a retry executes again (not replayed)
   const retry = await tool.execute({});
@@ -229,6 +234,82 @@ test("authorize predicate blocks a call the caller isn't entitled to", async () 
   assert.equal(entries[0]!.decision, "deny");
   assert.equal(entries[0]!.error, "authorization_denied");
   assert.equal(entries[1]!.decision, "allow");
+});
+
+test("approval can suspend (pending) and resume on re-invocation", async () => {
+  let granted = false;
+  const adapter = {
+    async request() {
+      return granted
+        ? { approved: true, approver: "boss@co" }
+        : { approved: false, pending: true, ref: "ticket-1" };
+    },
+  };
+  const { toolkit, audit } = setup({ approval: adapter });
+  let runs = 0;
+  const tool = toolkit.defineGovernedTool({
+    name: "wire_transfer",
+    description: "move money",
+    sideEffect: true,
+    approval: true, // also satisfies the side-effect gate requirement
+    execute: () => {
+      runs += 1;
+      return { ok: true };
+    },
+  });
+
+  // First invocation: not yet decided -> suspend, nothing executes.
+  await assert.rejects(
+    () => tool.execute({}),
+    (err: unknown) =>
+      err instanceof ApprovalPendingError && err.ref === "ticket-1",
+  );
+  assert.equal(runs, 0);
+
+  // The human approves out of band; the harness resumes -> re-invoke.
+  granted = true;
+  assert.deepEqual(await tool.execute({}), { ok: true });
+  assert.equal(runs, 1);
+
+  const entries = await audit.entries();
+  assert.equal(entries[0]!.decision, "defer");
+  assert.equal(entries[0]!.outcome, "pending");
+  assert.equal(entries.at(-1)!.outcome, "success");
+});
+
+test("a side-effect call whose intent record fails does not execute", async () => {
+  // Audit sink that fails when writing the pre-execution intent record.
+  const inner = new InMemoryAuditLog();
+  const audit: AuditLog = {
+    append: async (input) => {
+      if (input.outcome === "executing") throw new Error("audit down");
+      return inner.append(input);
+    },
+    entries: () => inner.entries(),
+  };
+  const toolkit = createGovernedToolkit({
+    context: () => ({
+      actor: { id: "a1", roles: ["agent"] },
+      tenantId: "acme",
+      scopes: ["customer:*"],
+    }),
+    audit,
+    idempotencyStore: new InMemoryIdempotencyStore(),
+  });
+  let runs = 0;
+  const tool = toolkit.defineGovernedTool<{ customerId: string }>({
+    name: "charge",
+    description: "charge a card",
+    sideEffect: true,
+    scope: (a) => `customer:${a.customerId}`,
+    execute: () => {
+      runs += 1;
+      return { charged: true };
+    },
+  });
+
+  await assert.rejects(() => tool.execute({ customerId: "c-1" }), /audit down/);
+  assert.equal(runs, 0, "handler must not run if its intent can't be recorded");
 });
 
 test("a side-effect tool with no authorization gate is rejected at definition", () => {

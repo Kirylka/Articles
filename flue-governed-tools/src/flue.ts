@@ -88,8 +88,10 @@ export function toFlueTool(governed: FlueCompatibleTool): FlueToolDefinition {
     description: governed.description,
     // A tool's parameters is always a schema object (valibot or JSON Schema).
     parameters: (governed.parameters ?? {}) as object,
-    execute: async (args) => {
-      const result = await governed.execute(args);
+    execute: async (args, signal) => {
+      // Forward Flue's AbortSignal to the handler (via the execution context),
+      // without letting it be mistaken for a host context object.
+      const result = await governed.execute(args, undefined, signal);
       return typeof result === "string" ? result : JSON.stringify(result);
     },
   };

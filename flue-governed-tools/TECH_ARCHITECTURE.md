@@ -161,15 +161,20 @@ For each `execute(rawArgs, hostCtx)`:
    `AuthorizationDeniedError`. Expresses dynamic checks scope lists can't, e.g.
    ownership. (FR-3.5)
 6. **Approval** (only if policy triggers): adapter decides; required but
-   unconfigured or denied ⇒ `ApprovalDeniedError`. (FR-5.3/5.4)
+   unconfigured or denied ⇒ `ApprovalDeniedError`; **pending** ⇒ record
+   `defer`/`pending` and raise `ApprovalPendingError` (suspend — the harness
+   pauses and resumes by re-invoking). (FR-5.3/5.4/5.5)
 7. **Idempotency** (only if policy present): `begin(tenant, key, ttl)`:
    - `replay` ⇒ skip handler, return stored result, outcome `replayed`. (FR-6.2/6.5)
    - `in_flight` ⇒ `IdempotencyConflictError`. (FR-6.3)
    - `started` ⇒ proceed; `complete` on success, `fail` on throw. (FR-6.4)
-8. **Execute** the handler with `ExecutionContext`.
-9. **Audit**: append exactly one chained record with the decision + outcome,
-   redacted args/result/error. Denials in steps 1–6 jump straight to this step
-   with `decision: "deny"`. Handler throws ⇒ `decision: "allow"`,
+8. **Intent + Execute**: for a side-effecting tool, append an `executing` intent
+   record first — if that append fails, throw *before* the handler runs, so a
+   side effect never runs unrecorded — then run the handler with
+   `ExecutionContext` (which carries the host `AbortSignal`). (FR-7.1)
+9. **Audit**: append the outcome record (chained), with decision + outcome and
+   redacted args/result/error. Denials in steps 1–6 jump straight here with
+   `decision: "deny"`. Handler throws ⇒ `decision: "allow"`,
    `outcome: "error"`, error re-propagated. (FR-7.1, FR-9.3)
 
 Decision/outcome matrix recorded: `allow|deny` × `success|error|denied|replayed`.
@@ -178,7 +183,9 @@ Decision/outcome matrix recorded: `allow|deny` × `success|error|denied|replayed
 
 ## 6. Tamper-evident audit design (FR-7)
 
-- **One record per call**, appended in order. (A-3)
+- **One record per call**, appended in order — except side-effecting calls,
+  which write an `executing` intent record before the handler and an outcome
+  record after (see §5 step 8). (A-3)
 - Each record stores `prevHash`; `hash = SHA-256(canonical(body_including_prevHash))`.
   Genesis `prevHash` = 64 zeros. (FR-7.2)
 - **Canonical serialization** = recursive key-sort before hashing, so order of
@@ -284,8 +291,10 @@ interface ToolDefinition<TParams> {
   sub-millisecond, negligible against model/tool latency. The hot path adds one
   SHA-256 per call.
 - **Audit append failure:** treated as a hard failure of the call (fail-closed
-  on the integrity guarantee) rather than silently dropping a record — a
-  governed action that cannot be recorded must not be reported as done.
+  on the integrity guarantee) rather than silently dropping a record. Because
+  the `executing` intent is written *before* the side effect, a failed intent
+  append throws before the handler runs — a side effect that cannot be recorded
+  is never performed.
 - **Idempotency store failure:** a side-effect tool whose store is unavailable
   fails closed (no execution) rather than risk a duplicate.
 - **Approval adapter timeout/error:** treated as not-approved (deny). (C-6)
@@ -294,9 +303,15 @@ interface ToolDefinition<TParams> {
 
 ## 12. Trade-offs & alternatives considered
 
-- **One audit record per call** vs. pre-decision + post-outcome pair: chose one
-  for a simpler chain and lower write amplification; revisit if a use case needs
-  to prove intent independently of outcome. (A-3)
+- **Intent + outcome for side effects** vs. a single record: a single record is
+  written after the handler, which means a failed audit write can't stop an
+  already-performed side effect. We split only side-effecting calls (intent
+  before, outcome after) to close that hole, accepting the extra write; reads,
+  denials, replays, and deferrals stay single-record. (A-3, FR-7.1)
+- **Suspend on pending approval** vs. blocking: blocking a tool call until a
+  human responds doesn't survive minutes/hours or process restarts, so a
+  `pending` decision raises `ApprovalPendingError` and the harness pauses/resumes
+  (re-invoking the tool). Idempotency keeps the eventual side effect once. (FR-5.5)
 - **ALS context** vs. explicit threading: ALS keeps tool authoring clean and
   removes a class of "forgot to pass context" bugs; explicit resolver remains
   available for non-ALS runtimes.

@@ -22,6 +22,15 @@ export interface ApprovalRequest<TArgs = unknown> {
 
 export interface ApprovalDecision {
   approved: boolean;
+  /**
+   * Not yet decided. The call is suspended (an `ApprovalPendingError` is
+   * thrown) so the harness can pause and resume later; on resume the tool is
+   * re-invoked and the adapter is consulted again. `approved` is ignored when
+   * `pending` is true.
+   */
+  pending?: boolean;
+  /** Adapter's handle for a pending/again-consulted approval (e.g. ticket id). */
+  ref?: string;
   approver?: string;
   reason?: string;
 }

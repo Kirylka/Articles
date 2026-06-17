@@ -10,8 +10,13 @@
  *   context -> validate -> RBAC -> scope -> authorize -> approval
  *           -> idempotency -> execute -> audit
  *
- * Exactly one audit entry is appended per call. Governance rejections raise a
- * `GovernanceError` subclass; handler failures propagate the original error.
+ * Audit records: denials, replays, and approval-deferrals write a single
+ * record. A side-effecting call writes an `executing` intent record *before*
+ * the handler runs (so a side effect can never run unrecorded) and an outcome
+ * record after; non-side-effecting calls write the single outcome record.
+ * Governance rejections raise a `GovernanceError` subclass (including
+ * `ApprovalPendingError`, a suspend signal); handler failures propagate the
+ * original error.
  */
 
 import type {
@@ -34,6 +39,7 @@ import { deniedScopes, normalizeScopes } from "./scope.js";
 import {
   AccessDeniedError,
   ApprovalDeniedError,
+  ApprovalPendingError,
   AuthorizationDeniedError,
   GovernanceConfigError,
   GovernanceError,
@@ -170,6 +176,7 @@ export function createGovernedToolkit(
     const execute = async (
       rawArgs: unknown,
       hostContext?: unknown,
+      signal?: AbortSignal,
     ): Promise<unknown> => {
       // 1. Resolve trusted context (fail-closed; we still record the denial).
       let ctx: TrustedContext;
@@ -262,6 +269,24 @@ export function createGovernedToolkit(
           ctx,
           reason: approval.reason,
         });
+        if (decision.pending) {
+          // Suspend, don't block: record the deferral and let the harness pause
+          // and resume (which re-invokes the tool). No side effect runs.
+          await audit({
+            ...base,
+            decision: "defer",
+            outcome: "pending",
+            requestedScopes: requested,
+            args: redactedArgs,
+            approver: decision.approver,
+            error: decision.ref ? `approval_pending:${decision.ref}` : undefined,
+          });
+          throw new ApprovalPendingError(
+            spec.name,
+            decision.ref,
+            decision.reason ?? approval.reason,
+          );
+        }
         if (!decision.approved) {
           await denyAudit("approval_denied", { approver: decision.approver });
           throw new ApprovalDeniedError(
@@ -276,11 +301,30 @@ export function createGovernedToolkit(
         ...ctx,
         authorizedScopes: requested,
         host: hostContext,
+        signal,
       };
+
+      // For side effects, record an intent BEFORE executing. If this append
+      // fails we throw here, so a side effect can never run unrecorded. The
+      // outcome record is written after. (Non-side-effect tools write only the
+      // single outcome record.)
+      const writeIntent = (idempotencyKey?: string): Promise<unknown> =>
+        spec.sideEffect
+          ? audit({
+              ...base,
+              decision: "allow",
+              outcome: "executing",
+              requestedScopes: requested,
+              args: redactedArgs,
+              approver,
+              idempotencyKey,
+            })
+          : Promise.resolve(undefined);
 
       const runAndAudit = async (
         idempotencyKey?: string,
       ): Promise<TResult> => {
+        await writeIntent(idempotencyKey);
         try {
           const result = await spec.execute(args, execCtx);
           await audit({
@@ -339,6 +383,14 @@ export function createGovernedToolkit(
         }
 
         // status === "started": execute once, recording completion/failure.
+        try {
+          await writeIntent(key);
+        } catch (err) {
+          // Intent record failed — release the key so it can be retried, and
+          // abort before any side effect runs.
+          await store.fail(ctx.tenantId, key);
+          throw err;
+        }
         try {
           const result = await spec.execute(args, execCtx);
           await store.complete(ctx.tenantId, key, result);
