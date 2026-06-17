@@ -94,6 +94,7 @@ requirement(s) it satisfies (BR-1 … BR-7).
 | **FR-9.1** | Governance rejections (missing context, RBAC, scope, approval, idempotency conflict) MUST raise typed errors distinguishable from ordinary handler failures. | BR-1..5 |
 | **FR-9.2** | The evaluation order MUST be deterministic and documented: context → RBAC → scope → approval → idempotency → execute → record. | BR-1..6 |
 | **FR-9.3** | A handler error MUST be recorded as an `error` outcome (not a governance denial) and the original error propagated. | BR-3 |
+| **FR-9.4** | Every `GovernanceError`'s `code` MUST come from a typed `GovernanceErrorCode` union, and the library MUST export guards (`isGovernanceError`, `isGovernanceDenial`, `isApprovalPending`) so callers branch on outcomes without `instanceof` chains. | BR-3 |
 
 ### 1.10 Reference example
 

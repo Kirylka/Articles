@@ -277,16 +277,24 @@ const toolkit = createGovernedToolkit({ context: ctx.resolver(), audit, approval
 ```
 
 ```ts
+import { isApprovalPending } from "flue-governed-tools";
+
 try {
   await ctx.run(trusted, () => harness.prompt(text));
 } catch (err) {
-  if (err instanceof ApprovalPendingError) {
+  if (isApprovalPending(err)) {
     // Park the run against err.ref (a ticket id) and return to the user.
     // A webhook from your approval system resumes it later.
     await parkRun(err.ref);
   } else throw err;
 }
 ```
+
+Every governance failure is a typed `GovernanceError` with a `code` from a known
+union (`scope_violation`, `authorization_denied`, `approval_pending`, …). Branch
+without `instanceof` chains using `isGovernanceError`, `isGovernanceDenial` (a
+real refusal the model should be told about), and `isApprovalPending` (the
+suspend signal).
 
 Two things make this safe. The pending call writes a `defer`/`pending` line to
 the audit log, so a request waiting on a human is on the record, not in limbo.
@@ -323,7 +331,7 @@ side effect never runs, and the refusal surfaces to the model as a tool error).
 
 ## Is this real yet
 
-It's pre-release, and honest about it. The governance behavior is covered by 80
+It's pre-release, and honest about it. The governance behavior is covered by 84
 unit and end-to-end tests, including on-disk tamper detection, the Web Crypto
 edge path with D1/KV adapters, and tests that run
 a governed tool through the actual `@flue/runtime` `defineTool` and valibot

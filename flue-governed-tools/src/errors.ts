@@ -2,16 +2,29 @@
  * Error types raised by the governance layer.
  *
  * All extend {@link GovernanceError} so callers (and the agent harness) can
- * distinguish a governance rejection from an ordinary handler failure.
+ * distinguish a governance rejection from an ordinary handler failure. Use the
+ * {@link isGovernanceError}, {@link isGovernanceDenial}, and
+ * {@link isApprovalPending} guards to branch without `instanceof` chains.
  */
+
+/** Every machine-readable code a {@link GovernanceError} can carry. */
+export type GovernanceErrorCode =
+  | "missing_context"
+  | "access_denied"
+  | "scope_violation"
+  | "authorization_denied"
+  | "approval_denied"
+  | "approval_pending"
+  | "idempotency_conflict"
+  | "config_error";
 
 export class GovernanceError extends Error {
   /** Machine-readable code, e.g. `"scope_violation"`. */
-  readonly code: string;
+  readonly code: GovernanceErrorCode;
   /** The tool the decision applied to, when known. */
   readonly tool?: string;
 
-  constructor(code: string, message: string, tool?: string) {
+  constructor(code: GovernanceErrorCode, message: string, tool?: string) {
     super(message);
     this.name = new.target.name;
     this.code = code;
@@ -131,4 +144,38 @@ export class IdempotencyConflictError extends GovernanceError {
     );
     this.key = key;
   }
+}
+
+/**
+ * Codes that mean governance *refused* the call. Excludes `approval_pending`
+ * (a suspend signal, not a denial) and `config_error` (a definition-time bug,
+ * never thrown at call time).
+ */
+const DENIAL_CODES: ReadonlySet<GovernanceErrorCode> = new Set([
+  "missing_context",
+  "access_denied",
+  "scope_violation",
+  "authorization_denied",
+  "approval_denied",
+  "idempotency_conflict",
+]);
+
+/** True for any error raised by the governance layer. */
+export function isGovernanceError(err: unknown): err is GovernanceError {
+  return err instanceof GovernanceError;
+}
+
+/**
+ * True when the governance layer refused the call (scope, authorization, RBAC,
+ * approval denial, missing context, idempotency conflict) — i.e. the model
+ * should be told it isn't allowed, not that the tool failed. Excludes the
+ * approval-pending suspend signal; use {@link isApprovalPending} for that.
+ */
+export function isGovernanceDenial(err: unknown): err is GovernanceError {
+  return err instanceof GovernanceError && DENIAL_CODES.has(err.code);
+}
+
+/** True for the suspend signal: approval is required and not yet decided. */
+export function isApprovalPending(err: unknown): err is ApprovalPendingError {
+  return err instanceof ApprovalPendingError;
 }
