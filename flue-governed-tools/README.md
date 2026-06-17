@@ -88,7 +88,7 @@ capture, so it lives in `authorize`:
 ```ts
 import { createAgent, defineTool } from "@flue/runtime";
 import * as v from "valibot";
-import { createGovernedToolkit, ContextStore, HashChainAuditLog } from "flue-governed-tools";
+import { createGovernedToolkit, ContextStore, HashChainAuditLog, caller } from "flue-governed-tools";
 
 // You set who the caller is, from your own auth — not the model, ever.
 const ctx = new ContextStore();
@@ -106,13 +106,10 @@ const resetPassword = toolkit.tool({                  // one call → a Flue Too
   sideEffect: true,
 
   // The check HTS never made: does this caller actually control the account?
-  // `authorize` is keyed to a declared anchor — here the authenticated caller —
-  // so the comparison can't accidentally be "arg vs nothing." `a` is inferred
-  // from `parameters`. Runs before any link is sent; a false answer logs it.
-  authorize: {
-    anchor: "caller",
-    check: (a, ctx) => accounts.isControlledBy(a.accountId, ctx.actor.id),
-  },
+  // `caller(...)` keys the decision to the authenticated caller (a declared
+  // anchor, so it can't be "arg vs nothing"); `a` is inferred from `parameters`.
+  // Runs before any link is sent; a false answer logs the refusal.
+  authorize: caller((a, ctx) => accounts.isControlledBy(a.accountId, ctx.actor.id)),
 
   // A retry won't send a second reset link.
   idempotency: { key: (a) => `reset:${a.accountId}` },
@@ -165,13 +162,13 @@ When you need a dynamic check `scope` can't express, `authorize` is keyed to a
 **declared anchor** so "compare an arg to nothing" has no shape to write:
 
 ```ts
-// caller identity (the common case)
-authorize: { anchor: "caller", check: (a, ctx) => owns(ctx.actor.id, a.target) }
+// caller identity (the common case) — `a` inferred, no annotation
+authorize: caller((a, ctx) => owns(ctx.actor.id, a.target))
 
 // a trusted server-side record — for anonymous recovery, where there's no
-// authenticated caller. The source is registered on the toolkit and resolved
-// before `check` runs; you compare the untrusted arg to the trusted value.
-authorize: { anchor: { trustedSource: "accountEmail" }, check: (a, email) => a.resetEmail === email }
+// authenticated caller. The named source is resolved before `check` runs; you
+// compare the untrusted arg to the trusted value.
+authorize: trusted("accountEmail", (a, email) => a.resetEmail === email)
 ```
 
 Register sources once: `createGovernedToolkit({ trustedSources: { accountEmail } })`.

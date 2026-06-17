@@ -17,6 +17,7 @@ import {
   HashChainAuditLog,
   InMemoryIdempotencyStore,
   createGovernedToolkit,
+  caller,
   verifyChain,
   type ApprovalAdapter,
   type AuditEntry,
@@ -55,7 +56,7 @@ function buildAgent(auditPath: string) {
     description: "send a reset link",
     sideEffect: true,
     // Caller may only reset an account they control.
-    authorize: { anchor: "caller", check: (a, ctx) => a.accountId === ctx.actor.id },
+    authorize: caller((a, ctx) => a.accountId === ctx.actor.id),
     idempotency: { key: (a) => `reset:${a.accountId}` },
     execute: (a) => {
       resetLinks += 1;
@@ -93,7 +94,7 @@ function buildAgent(auditPath: string) {
   return { toolkit, audit, runAs, call, resets: () => resetLinks, refunds: () => refundsIssued };
 }
 
-const caller: TrustedContext = {
+const principal: TrustedContext = {
   actor: { id: "c-100", roles: ["support_agent"] },
   tenantId: "acme",
   scopes: ["customer:c-100"],
@@ -104,7 +105,7 @@ test("e2e: a full run enforces authorize, scope, idempotency and audit", async (
   try {
     const app = buildAgent(path);
 
-    await app.runAs(caller, async () => {
+    await app.runAs(principal, async () => {
       // reset own account -> allowed
       await app.call("reset_password", { accountId: "c-100" });
       // reset someone else's account -> blocked by authorize (the Meta case)
@@ -184,7 +185,7 @@ test("e2e: tampering with the persisted audit file is detected", async () => {
   const path = join(tmpdir(), `e2e-tamper-${Date.now()}-${Math.random()}.jsonl`);
   try {
     const app = buildAgent(path);
-    await app.runAs(caller, async () => {
+    await app.runAs(principal, async () => {
       await app.call("reset_password", { accountId: "c-100" });
       await app.call("issue_refund", {
         customerId: "c-100",

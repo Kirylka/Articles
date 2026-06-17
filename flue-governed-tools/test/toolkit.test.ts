@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createGovernedToolkit } from "../src/toolkit.js";
+import { createGovernedToolkit, caller, trusted } from "../src/toolkit.js";
 import { InMemoryAuditLog, type AuditLog } from "../src/audit.js";
 import { InMemoryIdempotencyStore } from "../src/idempotency.js";
 import { ContextStore } from "../src/context.js";
@@ -220,8 +220,8 @@ test("authorize (caller anchor) blocks a call the caller isn't entitled to", asy
     name: "reset_password",
     description: "send a reset link",
     sideEffect: true,
-    // The caller may only reset their own account.
-    authorize: { anchor: "caller", check: (a, ctx) => a.accountId === ctx.actor.id },
+    // The caller may only reset their own account. `a` inferred — no annotation.
+    authorize: caller((a, ctx) => a.accountId === ctx.actor.id),
     execute: () => ({ sent: true }),
   });
 
@@ -344,11 +344,9 @@ test("authorize via a trusted source resolves the anchor server-side", async () 
     name: "start_recovery",
     description: "send a recovery link",
     sideEffect: true,
-    authorize: {
-      anchor: { trustedSource: "accountEmail" },
-      check: (a: { accountId: string; resetEmail: string }, src: unknown) =>
-        a.resetEmail === src,
-    },
+    // `a` inferred from the generic — no annotation; `src` is the resolved
+    // trusted value.
+    authorize: trusted("accountEmail", (a, src) => a.resetEmail === src),
     execute: () => ({ sent: true }),
   });
 
@@ -373,11 +371,7 @@ test("authorize referencing an unregistered trusted source is rejected at defini
         name: "start_recovery",
         description: "r",
         sideEffect: true,
-        authorize: {
-          anchor: { trustedSource: "doesNotExist" },
-          check: (a: { accountId: string; resetEmail: string }, src: unknown) =>
-            a.resetEmail === src,
-        },
+        authorize: trusted("doesNotExist", (a, src) => a.resetEmail === src),
         execute: () => ({ ok: true }),
       }),
     GovernanceConfigError,

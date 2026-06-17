@@ -81,6 +81,38 @@ export type AuthorizeSpec<TArgs> =
       check: (args: TArgs, source: unknown) => boolean | Promise<boolean>;
     };
 
+/**
+ * Authorize keyed to the authenticated caller. The check receives the trusted
+ * execution context — key the decision to `ctx.actor`. Prefer this helper over
+ * the raw object: `args` is inferred (it's pinned by the tool's `parameters`),
+ * and the call site reads lighter.
+ *
+ * ```ts
+ * authorize: caller((a, ctx) => owns(ctx.actor.id, a.accountId))
+ * ```
+ */
+export function caller<TArgs = Record<string, unknown>>(
+  check: (args: TArgs, ctx: ExecutionContext) => boolean | Promise<boolean>,
+): AuthorizeSpec<TArgs> {
+  return { anchor: "caller", check };
+}
+
+/**
+ * Authorize against a registered trusted source (resolved server-side and
+ * passed to the check) — for anonymous-recovery-style checks with no
+ * authenticated actor. `args` is inferred.
+ *
+ * ```ts
+ * authorize: trusted("accountEmail", (a, email) => a.resetEmail === email)
+ * ```
+ */
+export function trusted<TArgs = Record<string, unknown>>(
+  source: string,
+  check: (args: TArgs, value: unknown) => boolean | Promise<boolean>,
+): AuthorizeSpec<TArgs> {
+  return { anchor: { trustedSource: source }, check };
+}
+
 /** The spec a developer authors for a governed tool. */
 export interface GovernedToolSpec<TArgs, TResult> {
   name: string;

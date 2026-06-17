@@ -18,6 +18,7 @@ import {
   InMemoryAuditLog,
   InMemoryIdempotencyStore,
   createGovernedToolkit,
+  caller,
   type ApprovalAdapter,
   type FlueCompatibleTool,
   type TrustedContext,
@@ -85,10 +86,7 @@ const resetPassword = toolkit.defineGovernedTool<{ accountId: string }>({
   description: "Send a password reset link for an account.",
   sideEffect: true,
   // The check High Touch Support never made: caller must control the account.
-  authorize: {
-    anchor: "caller",
-    check: (a, ctx) => accounts.isControlledBy(a.accountId, ctx.actor.id),
-  },
+  authorize: caller((a, ctx) => accounts.isControlledBy(a.accountId, ctx.actor.id)),
   idempotency: { key: (a) => `reset:${a.accountId}` },
   execute: (a) => {
     accounts.sendResetLink(a.accountId);
@@ -129,7 +127,7 @@ const agent = init({ tools: [resetPassword, issueRefund] });
 
 // The verified caller for this conversation: customer c-100, acting for
 // themselves. Bound by us from auth — never by the model.
-const caller: TrustedContext = {
+const principal: TrustedContext = {
   actor: { id: "c-100", roles: ["customer"] },
   tenantId: "acme-app",
   scopes: ["customer:c-100"], // may only act on their own customer record
@@ -138,7 +136,7 @@ const caller: TrustedContext = {
 
 async function tryCall(label: string, name: string, args: unknown) {
   try {
-    const result = await contextStore.run(caller, () => agent.call(name, args));
+    const result = await contextStore.run(principal, () => agent.call(name, args));
     console.log(`✅ ${label}: ${JSON.stringify(result)}`);
   } catch (err) {
     console.log(
