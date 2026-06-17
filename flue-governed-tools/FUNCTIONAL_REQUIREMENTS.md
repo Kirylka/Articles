@@ -134,8 +134,8 @@ requirement(s) it satisfies (BR-1 … BR-7).
   relative to model/tool latency (target sub-millisecond for in-memory checks).
 - **C-12 (Footprint):** The package MUST stay small and dependency-light to keep
   the "small OSS library" positioning credible.
-- **C-13 (Licensing):** License MUST be permissive and compatible with the Flue
-  ecosystem (Apache-2.0 assumed, pending confirmation — see open questions).
+- **C-13 (Licensing):** License is **MIT** — chosen to be as free/permissive as
+  possible while remaining a widely-trusted, OSI-approved license.
 - **C-14 (Scope discipline):** Approvals and RBAC remain supporting adapters in
   v0.1; the library MUST NOT grow into a policy engine or approval-workflow
   product.

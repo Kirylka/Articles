@@ -103,7 +103,7 @@ external platform.
 - Guarantee **at-most-once** external writes per logical operation.
 - Produce a **tamper-evident** audit trail that can be independently verified.
 - Stay **in-process, Flue-native, and small** — no external services required.
-- Be **open source** with a permissive license aligned with Flue's ecosystem.
+- Be **open source** under the most permissive practical license (**MIT**).
 
 ### Non-goals (v0.1)
 - Not a managed control plane, gateway, or hosted service.
@@ -187,7 +187,7 @@ runtimes, a formal policy DSL.
 
 ## 11. Open questions
 
-1. License — match Flue (Apache-2.0)?
+1. License — **decided: MIT** (most permissive, widely trusted).
 2. Exact current Flue tool/`init` API shape to target for the adapter.
 3. Naming: `flue-governed-tools` (current pick) vs. `flue-tool-governance` /
    `flue-side-effect-guard` / `flue-enterprise-toolkit`.
