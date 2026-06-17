@@ -226,15 +226,25 @@ Decision/outcome matrix recorded: `allow|deny` × `success|error|denied|replayed
 
 ## 9. Flue integration adapter (`flue.ts`)
 
-- Emits an object matching Flue's expected tool shape
-  (`{ name, description, parameters, execute }`) so it drops into
-  `init({ tools: [...] })` alongside MCP and command tools. (FR-1.2)
-- Passes the model arguments as the first `execute` parameter and the Flue host
-  context as the second, which the `ContextResolver` may consume. (FR-2.4)
-- **Validation needed before build (A-1):** confirm the exact current Flue tool
-  contract (field names for the schema, `execute` signature, result shape). The
-  adapter is the single place that changes if Flue's API differs; the core is
-  insulated.
+Validated against `@flue/runtime` v1.0.0-beta.1 (A-1 resolved):
+
+- Flue defines tools with `defineTool({ name, description, parameters,
+  execute })` and accepts them in `init({ tools: [...] })` alongside MCP
+  (`connectMcpServer().tools`) and command (`defineCommand`) tools.
+- A governed tool already has this shape, so it is consumed as
+  `defineTool(toolkit.defineGovernedTool(...))`. (FR-1.2)
+- `parameters` is a Valibot/TypeBox schema, opaque to us and converted to JSON
+  Schema by Flue at define time. We pass it through untouched; Flue validates
+  model arguments against it before calling `execute(args)` (a single,
+  pre-parsed argument). Our internal validator therefore only runs for
+  function/`{parse}` validators and is identity for opaque schemas. (C-9)
+- `FlueContext` (`{ id, payload, env, req, log, ... }`) lives in the surrounding
+  `run` scope rather than being guaranteed as a per-call argument, so
+  `ContextStore` (AsyncLocalStorage) is the primary trusted-context mechanism;
+  `hostContextResolver` remains for runtimes that hand a context to `execute`.
+  (FR-2.4, A-2)
+- The adapter is the single Flue-coupled point; the core is insulated, so a
+  future Flue API change is contained here.
 
 ---
 

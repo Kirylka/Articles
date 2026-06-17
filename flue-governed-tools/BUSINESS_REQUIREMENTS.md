@@ -170,10 +170,10 @@ runtimes, a formal policy DSL.
 
 ## 10. Assumptions, dependencies, risks
 
-- **Assumption:** Flue tools are plain objects (name, description, parameter
-  schema, execute) acceptable to `init({ tools })`, so a wrapper integrates
-  without forking Flue. *(To confirm against the current Flue tool API before
-  design.)*
+- **Assumption (CONFIRMED):** Flue (`@flue/runtime` v1.0.0-beta.1) defines tools
+  via `defineTool({ name, description, parameters, execute })` and accepts them
+  in `init({ tools })`, so a wrapper integrates without forking Flue. Verified
+  against the live API on 2026-06-17.
 - **Dependency:** Node.js runtime primitives only for the MVP (no external
   services), to honor the "in-process" promise.
 - **Risk — Flue adds native governance:** Keep the wedge narrow (side-effect
@@ -188,7 +188,8 @@ runtimes, a formal policy DSL.
 ## 11. Open questions
 
 1. License — **decided: MIT** (most permissive, widely trusted).
-2. Exact current Flue tool/`init` API shape to target for the adapter.
+2. Flue tool/`init` API shape — **resolved**: `@flue/runtime` `defineTool` +
+   `init({ tools })`, Valibot/TypeBox `parameters`, `execute(args)`.
 3. Naming: `flue-governed-tools` (current pick) vs. `flue-tool-governance` /
    `flue-side-effect-guard` / `flue-enterprise-toolkit`.
 4. Is the first published artifact the **library**, an **article** explaining

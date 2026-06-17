@@ -15,7 +15,7 @@ requirement(s) it satisfies (BR-1 … BR-7).
 | ID | Requirement | Traces |
 | --- | --- | --- |
 | **FR-1.1** | The library MUST expose `defineGovernedTool(spec)` that takes a tool spec (name, description, argument schema, side-effect flag, governance policies, `execute` handler) and returns a tool object usable wherever a plain Flue tool is used. | BR-1..7 |
-| **FR-1.2** | The returned tool MUST be Flue-compatible: it MUST carry `name`, `description`, a parameter/argument schema, and an `execute(args, hostContext?)` function so it can be passed in Flue's `init({ tools })`. | BR-1 |
+| **FR-1.2** | The returned tool MUST match Flue's `ToolDef` shape (`name`, `description`, `parameters`, `execute`) so it can be wrapped with `defineTool(...)` and passed to `init({ tools })`. `parameters` is an opaque host schema (Valibot/TypeBox); `execute` receives the pre-parsed arguments (optional 2nd `hostContext`). | BR-1 |
 | **FR-1.3** | A governed tool MUST declare whether it produces an external side effect. Side-effect tools are the ones eligible for idempotency and (optionally) approval. | BR-2, BR-5 |
 | **FR-1.4** | Defining a governed tool MUST NOT require modifying or forking Flue; integration is via a thin adapter only. | BR-1 |
 
@@ -144,9 +144,17 @@ requirement(s) it satisfies (BR-1 … BR-7).
 
 ## 3. Assumptions to validate before design
 
-- **A-1:** Flue tools are plain objects accepted by `init({ tools })` with a
-  name, description, schema, and `execute` — confirm against the current Flue
-  tool API.
+- **A-1 (RESOLVED 2026-06-17):** Validated against `@flue/runtime`
+  (v1.0.0-beta.1). Flue tools are defined with `defineTool({ name, description,
+  parameters, execute })` and passed to `init({ tools })`. `parameters` is a
+  Valibot/TypeBox schema converted to JSON Schema at define time; Flue parses
+  model arguments against it (throwing `ToolInputValidationError`) before
+  calling `execute(args)` — a single, pre-parsed argument. `FlueContext`
+  (`{ id, payload, env, req, log, ... }`) lives in the surrounding `run` scope.
+  Consequences: our `parameters` is treated as an opaque pass-through schema;
+  internal validation only runs for function/`{parse}` validators; and
+  `ContextStore` (AsyncLocalStorage) is the primary context mechanism (A-2). A
+  governed tool is consumed as `defineTool(toolkit.defineGovernedTool(...))`.
 - **A-2:** `AsyncLocalStorage` (or an equivalent the host provides) is an
   acceptable mechanism for propagating trusted context within a run.
 - **A-3:** A single audit record per call (covering decision + outcome) is

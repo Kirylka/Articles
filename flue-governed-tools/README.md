@@ -43,6 +43,8 @@ Zero runtime dependencies. Node.js ≥ 20, TypeScript-first. MIT licensed.
 ## Quickstart
 
 ```ts
+import { defineTool, init } from "@flue/runtime";
+import * as v from "valibot";
 import {
   createGovernedToolkit,
   ContextStore,
@@ -59,33 +61,42 @@ const toolkit = createGovernedToolkit({
   idempotencyStore: new InMemoryIdempotencyStore(),
 });
 
-const issueRefund = toolkit.defineGovernedTool({
-  name: "issue_refund",
-  description: "Issue a refund to a customer.",
-  sideEffect: true,
-  requireRoles: ["support_agent"],
-  // The scope this call touches — checked against the actor's allowed scopes.
-  scope: (a: { customerId: string }) => `customer:${a.customerId}`,
-  // One refund per logical operation, even if the agent retries.
-  idempotency: { key: (a: { refundId: string }) => `refund:${a.refundId}` },
-  // Anything over $50 needs sign-off (delegated to your approval adapter).
-  approval: (a: { amount: number }) => a.amount > 50 && "exceeds $50",
-  execute: (a, ctx) => billing.refund(ctx.tenantId, a.customerId, a.amount),
-});
+// A governed tool has Flue's ToolDef shape, so wrap it with defineTool().
+const issueRefund = defineTool(
+  toolkit.defineGovernedTool<{ customerId: string; amount: number; refundId: string }>({
+    name: "issue_refund",
+    description: "Issue a refund to a customer.",
+    parameters: v.object({
+      customerId: v.string(),
+      amount: v.number(),
+      refundId: v.string(),
+    }),
+    sideEffect: true,
+    requireRoles: ["support_agent"],
+    // The scope this call touches — checked against the actor's allowed scopes.
+    scope: (a) => `customer:${a.customerId}`,
+    // One refund per logical operation, even if the agent retries.
+    idempotency: { key: (a) => `refund:${a.refundId}` },
+    // Anything over $50 needs sign-off (delegated to your approval adapter).
+    approval: (a) => a.amount > 50 && "exceeds $50",
+    execute: (a, ctx) => billing.refund(ctx.tenantId, a.customerId, a.amount),
+  }),
+);
 
-// `issueRefund` is a plain Flue tool — pass it straight to init():
-const agent = await init({ model, tools: [issueRefund] });
-
-// Bind the trusted context for the duration of the run:
+// Bind the trusted context for the duration of the run, then init the agent:
 await contextStore.run(
   {
     actor: { id: "agent-1", roles: ["support_agent"] },
     tenantId: "acme",
     scopes: ["customer:c-100"],
   },
-  () => agent.run(prompt),
+  () => init({ model: "anthropic/claude-sonnet-4-6", tools: [issueRefund] }),
 );
 ```
+
+> Flue parses model arguments against the Valibot `parameters` schema before
+> calling the handler; the governance pipeline then runs on the parsed args.
+> `parameters` is opaque to this library, so any schema Flue accepts works.
 
 A cross-tenant call is **blocked**, a duplicate refund is **replayed** (the
 side effect runs once), and every call appends a chained, verifiable audit

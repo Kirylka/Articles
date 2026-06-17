@@ -18,6 +18,7 @@ import type {
   ArgValidator,
   ExecutionContext,
   FlueCompatibleTool,
+  ParseValidator,
   TrustedContext,
 } from "./types.js";
 import type { ContextResolver } from "./context.js";
@@ -88,8 +89,14 @@ export interface GovernedToolkit {
 
 function makeValidator<T>(v?: ArgValidator<T>): (input: unknown) => T {
   if (!v) return (input) => input as T;
-  if (typeof v === "function") return v;
-  return (input) => v.parse(input);
+  if (typeof v === "function") return v as (input: unknown) => T;
+  const maybeParse = (v as { parse?: unknown }).parse;
+  if (typeof maybeParse === "function") {
+    return (input) => (v as ParseValidator<T>).parse(input);
+  }
+  // Opaque host schema (e.g. Flue/Valibot, TypeBox): the host validates it;
+  // arguments arrive already parsed, so pass them through unchanged.
+  return (input) => input as T;
 }
 
 function errorCode(err: unknown): string {

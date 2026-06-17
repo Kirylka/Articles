@@ -205,6 +205,30 @@ test("missing context denies with MissingContextError and audits unknown actor",
   assert.equal(entries[0]!.decision, "deny");
 });
 
+test("an opaque host schema (e.g. Valibot) is passed through, not parsed", async () => {
+  const { toolkit, audit } = setup();
+  // A Valibot-style schema object: no `.parse` method, not a function.
+  const valibotLike = { kind: "object", entries: { customerId: "string" } };
+  let received: unknown;
+  const tool = toolkit.defineGovernedTool<{ customerId: string }>({
+    name: "lookup",
+    description: "l",
+    parameters: valibotLike,
+    scope: (a) => `customer:${a.customerId}`,
+    execute: (a) => {
+      received = a;
+      return { ok: true };
+    },
+  });
+
+  // Flue would parse args first; here the args arrive and pass through intact.
+  await tool.execute({ customerId: "c-1" });
+  assert.deepEqual(received, { customerId: "c-1" });
+  // The schema is exposed verbatim for Flue's defineTool to consume.
+  assert.equal(tool.parameters, valibotLike);
+  assert.equal((await audit.entries())[0]!.outcome, "success");
+});
+
 test("the returned object is a Flue-compatible tool", () => {
   const { toolkit } = setup();
   const tool = toolkit.defineGovernedTool({

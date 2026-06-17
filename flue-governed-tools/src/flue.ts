@@ -2,26 +2,46 @@
  * Flue integration adapter.
  *
  * This is the ONLY module that is aware of how Flue calls a tool; the
- * governance core has no Flue dependency. A governed tool produced by
- * {@link createGovernedToolkit} is already shaped for Flue's
- * `init({ tools: [...] })` — `{ name, description, parameters, execute }` — so
- * it can be passed alongside MCP and command tools without adaptation.
+ * governance core has no Flue dependency.
  *
- * The one Flue-specific concern handled here is resolving the trusted context
- * from the host object Flue passes as the second argument to `execute` (e.g. a
- * session derived from the authenticated request that started the run). Use
- * {@link hostContextResolver} when you prefer reading context off that host
- * object instead of using `ContextStore`/`AsyncLocalStorage`.
+ * Flue (`@flue/runtime`) defines tools with `defineTool({ name, description,
+ * parameters, execute })`, where `parameters` is a Valibot/TypeBox schema that
+ * Flue converts to JSON Schema and validates model arguments against before
+ * calling `execute(args)`. A governed tool produced by
+ * {@link createGovernedToolkit} has exactly that shape, so you pass it straight
+ * through Flue's `defineTool` and into `init({ tools })`:
  *
- * Usage:
  * ```ts
+ * import { defineTool, init } from "@flue/runtime";
+ * import * as v from "valibot";
+ * import { createGovernedToolkit, ContextStore, HashChainAuditLog }
+ *   from "flue-governed-tools";
+ *
+ * const ctx = new ContextStore();
  * const toolkit = createGovernedToolkit({
- *   context: hostContextResolver((host) => deriveTrustedContext(host)),
+ *   context: ctx.resolver(),
  *   audit: new HashChainAuditLog({ path: "audit.jsonl" }),
  * });
- * const tools = [toolkit.defineGovernedTool(refundSpec)];
- * const agent = await init({ model, tools });
+ *
+ * const refund = defineTool(
+ *   toolkit.defineGovernedTool({
+ *     name: "issue_refund",
+ *     description: "Issue a refund.",
+ *     parameters: v.object({ customerId: v.string(), amount: v.number() }),
+ *     sideEffect: true,
+ *     scope: (a) => `customer:${a.customerId}`,
+ *     execute: (a, gctx) => billing.refund(gctx.tenantId, a.customerId, a.amount),
+ *   }),
+ * );
+ *
+ * // Bind trusted context for the run; the model never sees or sets it.
+ * await ctx.run(trustedContext, () => init({ model, tools: [refund] }));
  * ```
+ *
+ * Flue's `FlueContext` (`{ id, payload, env, req, log, ... }`) lives in the
+ * surrounding `run` scope, which is why `ContextStore` (AsyncLocalStorage) is
+ * the recommended way to supply trusted context. If your runtime instead hands
+ * a context object to `execute`, use {@link hostContextResolver}.
  */
 
 import type { ContextResolver } from "./context.js";

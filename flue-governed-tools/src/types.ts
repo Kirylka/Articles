@@ -31,14 +31,26 @@ export interface TrustedContext {
   attributes?: Record<string, unknown>;
 }
 
+/** A zod-like validator (used for internal validation). */
+export interface ParseValidator<T> {
+  parse: (input: unknown) => T;
+}
+
+/** A plain function validator (used for internal validation). */
+export type FnValidator<T> = (input: unknown) => T;
+
 /**
- * A validator for tool arguments. Anything zod-like (an object with a `parse`
- * method) works directly, and a plain function is also accepted. Omitting a
- * validator passes arguments through unchanged.
+ * A schema/validator for tool arguments. Three accepted forms:
+ *  - a function `(input) => T`, or a zod-like `{ parse }` — this library
+ *    validates arguments internally;
+ *  - an **opaque host schema** (e.g. a Flue/Valibot `v.object(...)` or a
+ *    TypeBox `Type.Object(...)`) — passed through untouched so the host
+ *    framework validates it. Flue parses model arguments against this schema
+ *    before our handler runs, so no internal validation is needed.
+ *
+ * Omitting a validator passes arguments through unchanged.
  */
-export type ArgValidator<T> =
-  | { parse: (input: unknown) => T }
-  | ((input: unknown) => T);
+export type ArgValidator<T> = ParseValidator<T> | FnValidator<T> | object;
 
 /** The context handed to a governed tool's `execute` handler. */
 export interface ExecutionContext extends TrustedContext {
@@ -55,9 +67,14 @@ export type Decision = "allow" | "deny";
 export type Outcome = "success" | "error" | "denied" | "replayed";
 
 /**
- * A tool object shaped to be accepted by Flue's `init({ tools })` (and most
- * MCP-style runtimes): a name, a description, a parameter schema and an
- * `execute` function.
+ * A tool object shaped like Flue's `ToolDef` (`@flue/runtime`): a name, a
+ * description, a parameter schema and an `execute` function. Pass the result
+ * through Flue's `defineTool(...)` and into `init({ tools })`.
+ *
+ * Flue calls `execute` with the already-parsed arguments object. The optional
+ * second `hostContext` argument carries Flue's `FlueContext` for runtimes that
+ * pass it; the recommended way to supply trusted context is `ContextStore`
+ * (AsyncLocalStorage) bound in the surrounding `run(...)` scope.
  */
 export interface FlueCompatibleTool {
   name: string;

@@ -144,7 +144,9 @@ T-2 … T-8 are independent of one another and may be done in parallel after T-1
 - **Objective:** Emit a Flue-compatible tool object.
 - **Deliverables:** `src/flue.ts` — shaping to `{ name, description,
   parameters, execute(args, hostCtx) }`; forward `hostCtx` to the resolver.
-- **Dependencies:** T-9; **A-1 confirmed** (current Flue tool contract).
+- **Dependencies:** T-9; **A-1 confirmed** — `@flue/runtime` `defineTool({ name,
+  description, parameters, execute })`, opaque Valibot/TypeBox `parameters`,
+  `execute(args)` single pre-parsed arg, `FlueContext` in the `run` scope.
 - **Acceptance:** Output drops into `init({ tools: [...] })`; host context
   reaches a custom resolver; core modules remain free of any Flue import.
 - **Traceability:** FR-1.2/1.4, C-2/C-3; arch §9.
@@ -195,4 +197,6 @@ T-2 … T-8 are independent of one another and may be done in parallel after T-1
 3. Cross-tenant action **blocked**, duplicate refund **replayed**, audit chain
    **verified** — demonstrated by the example and covered by tests.
 4. Core modules contain no Flue import (C-3 verified by inspection/test).
-5. Open assumption **A-1** (Flue tool API) resolved before T-10 is closed.
+5. Open assumption **A-1** (Flue tool API) — RESOLVED against `@flue/runtime`
+   v1.0.0-beta.1; the adapter and docs reflect the real `defineTool`/`init`
+   contract.
