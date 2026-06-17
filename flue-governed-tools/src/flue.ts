@@ -53,11 +53,20 @@
  * );
  *
  * const agent = createAgent(() => ({ model, tools: [refund] }));
- *
- * // In your workflow/handler, derive trusted context from the request and bind
- * // it around the harness so every tool call sees it:
- * //   await ctx.run(deriveContext(flueCtx.req), () => harness.prompt(text));
  * ```
+ *
+ * Supplying the trusted context depends on how Flue runs the tool:
+ *  - **You drive the prompt** (workflows, direct calls): the tool runs inside
+ *    your awaited call, so `ContextStore` (AsyncLocalStorage) reaches it —
+ *    `await ctx.run(deriveContext(flueCtx.req), () => harness.prompt(text))`.
+ *  - **Flue drives the prompt** (`dispatch()` / addressable agents): the turn is
+ *    processed detached from your caller, so ALS can't reach the tool. Bind the
+ *    context per invocation inside `createAgent` with
+ *    `toolkit.withContext(deriveTrustedContext(ctx.payload, ctx.env))`, then
+ *    define the tools from the bound toolkit.
+ *
+ * {@link hostContextResolver} remains for non-Flue runtimes that pass a context
+ * object to `execute` (Flue's second `execute` arg is an AbortSignal).
  */
 
 import type { ContextResolver } from "./context.js";

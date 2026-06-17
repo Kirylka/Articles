@@ -162,21 +162,64 @@ your authenticated request and travels separately, through `ContextStore`
 the library checks it against what the caller is allowed to touch, and that
 comparison is your wall.
 
+## Binding context: two patterns
+
+How the trusted context reaches the tool depends on how Flue runs the tool.
+
+**You drive the prompt (workflows, direct calls).** When your code holds the
+session and `await`s `session.prompt(...)`, the tool runs inside your async call,
+so `ContextStore` (AsyncLocalStorage) carries the context straight through —
+that's the quickstart above.
+
+**Flue drives the prompt (dispatched / addressable agents).** With `dispatch()`,
+Flue processes the turn on its own, detached from your caller, so an
+`AsyncLocalStorage` set around `dispatch()` won't reach the tool. Bind the
+context per invocation instead, inside `createAgent`, where you have the
+payload:
+
+```ts
+const agent = createAgent((ctx) => {
+  // ctx.payload / ctx.env came from your authenticated dispatch entrypoint.
+  const trusted = deriveTrustedContext(ctx.payload, ctx.env);
+  const bound = toolkit.withContext(trusted); // shares audit/idempotency/etc.
+
+  return {
+    model,
+    tools: [
+      defineTool(
+        toFlueTool(
+          bound.defineGovernedTool({ name: "reset_password", /* … */ }),
+        ),
+      ),
+    ],
+  };
+});
+```
+
+`withContext` returns a toolkit that resolves the context from that fixed value
+(or a resolver you pass), so the bound tool doesn't depend on ambient state.
+Same audit log, same idempotency store, per-invocation identity.
+
 ## What runs on every call
 
 ```
-context → validate → RBAC → scope → approval → idempotency → execute → audit
+context → validate → RBAC → scope → authorize → approval → idempotency
+        → execute → audit
 ```
 
-Any step can stop the call, and exactly one record gets written either way:
-allowed or refused, succeeded, replayed, or errored.
+Any step can stop the call — allowed or refused, succeeded, replayed, or
+errored. A side-effecting call records an `executing` intent before the handler
+runs and the outcome after; everything else writes a single record.
 
 - **Scope** keeps a call to one account or one tenant, and keeps callers off
   accounts that aren't theirs.
+- **Authorize** is the dynamic check a scope list can't express — "does this
+  caller actually own this account?" — the gate Meta's HTS was missing.
 - **Idempotency** means a retry replays the first result instead of doing the
   thing twice.
-- **Audit** is one hash-chained line per call. Edit any past line and
-  `verifyChain()` tells you which one. Add an HMAC key and a from-scratch
+- **Audit** is a hash-chained record per call (two for side effects: intent +
+  outcome). Edit any past line and `verifyChain()` tells you which one. Add an
+  HMAC key and a from-scratch
   rewrite won't pass either.
 - **RBAC**, **approval**, and **PII redaction** are there when you want them, as
   adapters rather than the main story.

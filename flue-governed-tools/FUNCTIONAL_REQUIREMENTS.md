@@ -27,6 +27,7 @@ requirement(s) it satisfies (BR-1 … BR-7).
 | **FR-2.2** | The trusted context MUST be available to every governed tool invocation triggered within a single agent run, without the developer threading it through each call manually. | BR-1 |
 | **FR-2.3** | If a governed tool is invoked with no resolvable trusted context, the call MUST be denied (fail-closed) and recorded. | BR-1, BR-3 |
 | **FR-2.4** | The `execute` handler MUST receive the trusted context (incl. the scopes it was authorized against) so it can make tenant-bound calls to downstream systems. | BR-1 |
+| **FR-2.5** | The library MUST support binding the trusted context **per invocation** (not only via ambient `AsyncLocalStorage`), for hosts that run tools detached from the caller (e.g. Flue's dispatched/addressable-agent path). `toolkit.withContext(value \| resolver)` MUST return a toolkit that resolves context from the bound value while sharing audit/idempotency/adapters. | BR-1 |
 
 ### 1.3 Scope / tenant enforcement
 
@@ -158,8 +159,13 @@ requirement(s) it satisfies (BR-1 … BR-7).
   internal validation only runs for function/`{parse}` validators; and
   `ContextStore` (AsyncLocalStorage) is the primary context mechanism (A-2). A
   governed tool is consumed as `defineTool(toolkit.defineGovernedTool(...))`.
-- **A-2:** `AsyncLocalStorage` (or an equivalent the host provides) is an
-  acceptable mechanism for propagating trusted context within a run.
+- **A-2 (REFINED):** `AsyncLocalStorage` propagates context only when the caller
+  drives the prompt within its own async scope (Flue workflows/direct calls).
+  Flue's dispatched/addressable-agent path runs tools detached, so context is
+  bound per invocation via `withContext` inside `createAgent` (from the dispatch
+  payload). Validated by reading the `@flue/runtime` source; both patterns are
+  supported and tested. A live dispatched run is the remaining spike (no model
+  key in CI; needs runtime assembly).
 - **A-3 (REVISED):** Side-effecting calls use a pre/post split (an `executing`
   intent record before the handler, an outcome record after) so a side effect
   cannot run unrecorded; non-side-effecting calls, denials, replays, and

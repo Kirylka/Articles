@@ -106,6 +106,15 @@ export interface GovernedToolkit {
   defineGovernedTool<TArgs = Record<string, unknown>, TResult = unknown>(
     spec: GovernedToolSpec<TArgs, TResult>,
   ): FlueCompatibleTool;
+  /**
+   * Derive a toolkit that resolves the trusted context from a fixed value (or a
+   * given resolver) instead of the ambient one. Use this for Flue's dispatched
+   * / addressable-agent pattern, where tool calls run detached from the caller
+   * so `ContextStore` (AsyncLocalStorage) can't reach them: bind the context
+   * per invocation inside `createAgent`, derived from `ctx.payload`/`ctx.env`.
+   * All other collaborators (audit, idempotency, adapters) are shared.
+   */
+  withContext(context: TrustedContext | ContextResolver): GovernedToolkit;
 }
 
 function makeValidator<T>(v?: ArgValidator<T>): (input: unknown) => T {
@@ -146,9 +155,19 @@ export function createGovernedToolkit(
   const timestamp = (): string | undefined =>
     options.clock ? new Date(options.clock()).toISOString() : undefined;
 
-  function defineGovernedTool<TArgs, TResult>(
-    spec: GovernedToolSpec<TArgs, TResult>,
-  ): FlueCompatibleTool {
+  // Build a toolkit bound to a specific context resolver; `withContext` derives
+  // siblings that share everything else but resolve the context differently.
+  const build = (resolveContext: ContextResolver): GovernedToolkit => {
+    const withContext = (
+      context: TrustedContext | ContextResolver,
+    ): GovernedToolkit =>
+      build(typeof context === "function" ? context : () => context);
+
+    return { defineGovernedTool, withContext };
+
+    function defineGovernedTool<TArgs, TResult>(
+      spec: GovernedToolSpec<TArgs, TResult>,
+    ): FlueCompatibleTool {
     // Fail closed at definition time: a side-effecting tool must declare an
     // authorization gate, or explicitly opt out. This is the structural answer
     // to "the check lived nowhere".
@@ -181,7 +200,7 @@ export function createGovernedToolkit(
       // 1. Resolve trusted context (fail-closed; we still record the denial).
       let ctx: TrustedContext;
       try {
-        ctx = await options.context(hostContext);
+        ctx = await resolveContext(hostContext);
       } catch (err) {
         await audit({
           actorId: "unknown",
@@ -431,7 +450,8 @@ export function createGovernedToolkit(
       parameters: spec.parameters,
       execute,
     };
-  }
+    }
+  };
 
-  return { defineGovernedTool };
+  return build(options.context);
 }

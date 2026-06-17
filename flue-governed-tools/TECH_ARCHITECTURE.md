@@ -262,12 +262,17 @@ interface ToolDefinition<TParams> {
   (throwing `ToolInputValidationError`) before our pipeline runs. Our internal
   validator is therefore identity for opaque schemas, active only for
   function/`{parse}` validators. (C-9)
-- The 2nd `execute` argument is an **AbortSignal**, not context. `FlueContext`
-  (`{ id, payload, env, req, log, init }`) is available at the agent/workflow
-  boundary (notably `req` for auth), so trusted context is derived there and
-  propagated via `ContextStore` (AsyncLocalStorage). `hostContextResolver`
-  remains a helper for non-Flue runtimes that pass a context to `execute`.
-  (FR-2.4, A-2)
+- The 2nd `execute` argument is an **AbortSignal**, not context — forwarded to
+  the handler via `ExecutionContext.signal`. Two context-binding patterns,
+  matching how Flue runs the tool:
+  - **Caller drives prompt** (workflows/direct): tool runs in the caller's
+    awaited scope ⇒ `ContextStore` (AsyncLocalStorage) reaches it.
+  - **Flue drives prompt** (`dispatch()`/addressable agents): the turn runs
+    detached (durable coordinator on a separate tick) ⇒ ALS can't reach the
+    tool. Bind per invocation with `toolkit.withContext(...)` inside
+    `createAgent`, deriving identity from `ctx.payload`/`ctx.env`.
+  `hostContextResolver` remains for non-Flue runtimes that pass a context to
+  `execute`. (FR-2.4, FR-2.5, A-2)
 - The adapter is the single Flue-coupled point; the core is insulated, so a
   future Flue API change is contained here.
 
