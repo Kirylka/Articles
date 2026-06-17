@@ -1,8 +1,8 @@
 # flue-governed-tools
 
-In-process governance for [Flue](https://github.com/withastro/flue) tools:
-tenant-scoped execution, idempotent external writes, and an audit log you can
-actually prove wasn't edited.
+In-process governance for [Flue](https://github.com/withastro/flue) tools: stop
+an agent from taking an action it isn't allowed to — on the wrong account, or
+twice — and keep a tamper-evident receipt of every one it does.
 
 ---
 
@@ -105,10 +105,14 @@ const resetPassword = toolkit.tool({                  // one call → a Flue Too
   parameters: v.object({ accountId: v.string() }),
   sideEffect: true,
 
-  // The check HTS never made: does this caller actually control the account
-  // they're asking about? `a` is inferred from `parameters` — no generic to
-  // restate. Runs before any link is sent; a false answer logs the refusal.
-  authorize: (a, gctx) => accounts.isControlledBy(a.accountId, gctx.actor.id),
+  // The check HTS never made: does this caller actually control the account?
+  // `authorize` is keyed to a declared anchor — here the authenticated caller —
+  // so the comparison can't accidentally be "arg vs nothing." `a` is inferred
+  // from `parameters`. Runs before any link is sent; a false answer logs it.
+  authorize: {
+    anchor: "caller",
+    check: (a, ctx) => accounts.isControlledBy(a.accountId, ctx.actor.id),
+  },
 
   // A retry won't send a second reset link.
   idempotency: { key: (a) => `reset:${a.accountId}` },
@@ -153,12 +157,27 @@ your authenticated request and travels separately, through `ContextStore`
 `scope(args, ctx)` is where those two meet, and it's deliberately the safe
 shape: you say what the call *wants to touch*, the library compares it to what
 the **caller** is allowed to touch. You never write the comparison, so you can't
-forget to involve the caller — which is the mistake that defeats a check from
-the inside (`authorize: (a) => accountExists(a.target)` passes the injection;
-the attack succeeds *through* the check). When you need a dynamic check `scope`
-can't express, `authorize` must be keyed to the caller — `(args, ctx) =>
-owns(ctx.actor.id, args.target)` — and the library rejects an arg-only
-`authorize` at definition so the footgun doesn't compile.
+forget to involve the caller — the mistake that defeats a check from the inside,
+where `accountExists(a.target)` passes the very injection it should stop and the
+attack succeeds *through* the check.
+
+When you need a dynamic check `scope` can't express, `authorize` is keyed to a
+**declared anchor** so "compare an arg to nothing" has no shape to write:
+
+```ts
+// caller identity (the common case)
+authorize: { anchor: "caller", check: (a, ctx) => owns(ctx.actor.id, a.target) }
+
+// a trusted server-side record — for anonymous recovery, where there's no
+// authenticated caller. The source is registered on the toolkit and resolved
+// before `check` runs; you compare the untrusted arg to the trusted value.
+authorize: { anchor: { trustedSource: "accountEmail" }, check: (a, email) => a.resetEmail === email }
+```
+
+Register sources once: `createGovernedToolkit({ trustedSources: { accountEmail } })`.
+The anchor is also what the governance manifest records, so a reviewer can see
+*every* side-effecting tool is keyed to caller or a trusted source — never to an
+argument alone.
 
 ## Scoped tools vs general primitives
 

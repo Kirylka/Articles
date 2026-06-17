@@ -50,6 +50,37 @@ import {
   ScopeViolationError,
 } from "./errors.js";
 
+/**
+ * A declared trusted source: a server-side lookup whose result is a trustworthy
+ * anchor to compare an (untrusted) argument against — e.g. "the email on file
+ * for this account". Registered on the toolkit and referenced by name.
+ */
+export type TrustedSource = (
+  args: any,
+  ctx: TrustedContext,
+) => unknown | Promise<unknown>;
+
+/**
+ * Authorization keyed to a *declared trusted anchor*, not to the arguments
+ * alone — so the manifest can record the anchor honestly and the common footgun
+ * (comparing an arg to nothing trusted) has no shape to be written in.
+ *
+ *  - `anchor: "caller"` → `check` receives the trusted execution context; key
+ *    the decision to `ctx.actor` (e.g. `owns(ctx.actor.id, a.accountId)`).
+ *  - `anchor: { trustedSource }` → the named source is resolved server-side and
+ *    its value passed to `check` (e.g. `a.resetEmail === source`) — for
+ *    anonymous-recovery-style checks where there is no authenticated actor.
+ */
+export type AuthorizeSpec<TArgs> =
+  | {
+      anchor: "caller";
+      check: (args: TArgs, ctx: ExecutionContext) => boolean | Promise<boolean>;
+    }
+  | {
+      anchor: { trustedSource: string };
+      check: (args: TArgs, source: unknown) => boolean | Promise<boolean>;
+    };
+
 /** The spec a developer authors for a governed tool. */
 export interface GovernedToolSpec<TArgs, TResult> {
   name: string;
@@ -63,11 +94,11 @@ export interface GovernedToolSpec<TArgs, TResult> {
   /** Derive the resource scope(s) this specific call will touch. */
   scope?: (args: TArgs, ctx: TrustedContext) => string | string[];
   /**
-   * Arbitrary authorization predicate for "is this caller allowed to do this to
-   * this target?" — including ownership checks that a static scope list can't
-   * express. Return false (or a falsy value) to deny.
+   * Authorization for "is this caller allowed to do this to this target?",
+   * keyed to a declared trusted anchor (caller identity or a trusted source).
+   * See {@link AuthorizeSpec}.
    */
-  authorize?: (args: TArgs, ctx: TrustedContext) => boolean | Promise<boolean>;
+  authorize?: AuthorizeSpec<TArgs>;
   /** Idempotency policy for side-effectful writes. */
   idempotency?: {
     key: (args: TArgs, ctx: TrustedContext) => string;
@@ -133,6 +164,13 @@ export interface GovernedToolkitOptions {
   audit: AuditLog;
   /** Idempotency store. Defaults to a process-local in-memory store. */
   idempotencyStore?: IdempotencyStore;
+  /**
+   * Declared trusted sources for `authorize: { anchor: { trustedSource } }`.
+   * Server-side lookups whose results are trustworthy anchors (e.g. the email
+   * on file for an account). Referenced by name; an unknown name is rejected at
+   * definition.
+   */
+  trustedSources?: Record<string, TrustedSource>;
   /**
    * Flue's `defineTool` (from `@flue/runtime`). Provide it to enable the
    * one-call {@link GovernedToolkit.tool} helper.
@@ -245,17 +283,19 @@ export function createGovernedToolkit(
     function defineGovernedTool<TArgs, TResult>(
       spec: GovernedToolSpec<TArgs, TResult>,
     ): FlueCompatibleTool {
-    // `authorize` must be keyed to the trusted caller, not just validate the
-    // arguments — an arg-only check passes the injection it's meant to stop.
-    // Require it to at least take the context (arity >= 2); an arg-only
-    // predicate is rejected with a teaching message.
-    if (spec.authorize && spec.authorize.length < 2) {
+    // `authorize` is keyed to a declared anchor (caller or a trusted source),
+    // so there's no arg-only shape to reject. We only check that a referenced
+    // trusted source actually exists.
+    if (
+      spec.authorize &&
+      typeof spec.authorize.anchor === "object" &&
+      !(spec.authorize.anchor.trustedSource in (options.trustedSources ?? {}))
+    ) {
       throw new GovernanceConfigError(
         spec.name,
-        `authorize for "${spec.name}" must take the trusted context as its ` +
-          "second argument and key the decision to the caller — e.g. " +
-          "(args, ctx) => owns(ctx.actor.id, args.target). An arg-only check " +
-          "passes the very injection it should stop.",
+        `authorize for "${spec.name}" references unknown trusted source ` +
+          `"${spec.authorize.anchor.trustedSource}". Register it in ` +
+          "createGovernedToolkit({ trustedSources }).",
       );
     }
 
@@ -348,6 +388,12 @@ export function createGovernedToolkit(
 
       const redactedArgs = redactor(args);
       const requested = normalizeScopes(spec.scope?.(args, ctx));
+      const execCtx: ExecutionContext = {
+        ...ctx,
+        authorizedScopes: requested,
+        host: hostContext,
+        signal,
+      };
 
       const denyAudit = (error: string, extra: Partial<AuditInput> = {}) =>
         audit({
@@ -374,10 +420,20 @@ export function createGovernedToolkit(
         throw new ScopeViolationError(spec.name, denied, ctx.scopes);
       }
 
-      // 5. Authorization predicate (e.g. "caller must own this target").
-      if (spec.authorize && !(await spec.authorize(args, ctx))) {
-        await denyAudit("authorization_denied");
-        throw new AuthorizationDeniedError(spec.name);
+      // 5. Authorization, keyed to a declared trusted anchor.
+      if (spec.authorize) {
+        const a = spec.authorize;
+        const ok =
+          a.anchor === "caller"
+            ? await a.check(args, execCtx)
+            : await a.check(
+                args,
+                await options.trustedSources![a.anchor.trustedSource]!(args, ctx),
+              );
+        if (!ok) {
+          await denyAudit("authorization_denied");
+          throw new AuthorizationDeniedError(spec.name);
+        }
       }
 
       // 6. Approval (only when a policy is declared and triggered).
@@ -424,13 +480,6 @@ export function createGovernedToolkit(
         }
         approver = decision.approver;
       }
-
-      const execCtx: ExecutionContext = {
-        ...ctx,
-        authorizedScopes: requested,
-        host: hostContext,
-        signal,
-      };
 
       // For side effects, record an intent BEFORE executing. If this append
       // fails we throw here, so a side effect can never run unrecorded. The

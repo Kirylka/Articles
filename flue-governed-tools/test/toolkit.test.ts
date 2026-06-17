@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createGovernedToolkit } from "../src/toolkit.js";
 import { InMemoryAuditLog, type AuditLog } from "../src/audit.js";
 import { InMemoryIdempotencyStore } from "../src/idempotency.js";
+import { ContextStore } from "../src/context.js";
 import {
   AccessDeniedError,
   ApprovalDeniedError,
@@ -213,14 +214,14 @@ test("missing context denies with MissingContextError and audits unknown actor",
   assert.equal(entries[0]!.decision, "deny");
 });
 
-test("authorize predicate blocks a call the caller isn't entitled to", async () => {
+test("authorize (caller anchor) blocks a call the caller isn't entitled to", async () => {
   const { toolkit, audit } = setup();
   const tool = toolkit.defineGovernedTool<{ accountId: string }>({
     name: "reset_password",
     description: "send a reset link",
     sideEffect: true,
     // The caller may only reset their own account.
-    authorize: (a, ctx) => a.accountId === ctx.actor.id,
+    authorize: { anchor: "caller", check: (a, ctx) => a.accountId === ctx.actor.id },
     execute: () => ({ sent: true }),
   });
 
@@ -326,30 +327,60 @@ test("a side-effect tool with no authorization gate is rejected at definition", 
   );
 });
 
-test("authorize must be caller-keyed: an arg-only (arity 1) predicate is rejected", () => {
+test("authorize via a trusted source resolves the anchor server-side", async () => {
+  // The anonymous-recovery shape: no authenticated actor; the trusted anchor is
+  // a record lookup (email on file), compared against the model-supplied arg.
+  const store = new ContextStore();
+  const audit = new InMemoryAuditLog();
+  const toolkit = createGovernedToolkit({
+    context: store,
+    audit,
+    trustedSources: {
+      accountEmail: (a: { accountId: string }) =>
+        a.accountId === "acct-1" ? "owner@acme.test" : "someone@else.test",
+    },
+  });
+  const reset = toolkit.defineGovernedTool<{ accountId: string; resetEmail: string }>({
+    name: "start_recovery",
+    description: "send a recovery link",
+    sideEffect: true,
+    authorize: {
+      anchor: { trustedSource: "accountEmail" },
+      check: (a: { accountId: string; resetEmail: string }, src: unknown) =>
+        a.resetEmail === src,
+    },
+    execute: () => ({ sent: true }),
+  });
+
+  const ctx = { actor: { id: "anon", roles: [] }, tenantId: "t", scopes: [] };
+  // Right email → allowed; wrong email → denied (the HTS check, made mandatory).
+  await store.run(ctx, () =>
+    reset.execute({ accountId: "acct-1", resetEmail: "owner@acme.test" }),
+  );
+  await store.run(ctx, async () => {
+    await assert.rejects(
+      () => reset.execute({ accountId: "acct-1", resetEmail: "attacker@evil.test" }),
+      AuthorizationDeniedError,
+    );
+  });
+});
+
+test("authorize referencing an unregistered trusted source is rejected at definition", () => {
   const { toolkit } = setup();
-  // Arg-only check — the injection footgun. Rejected at definition.
   assert.throws(
     () =>
-      toolkit.defineGovernedTool<{ accountId: string }>({
-        name: "reset_password",
+      toolkit.defineGovernedTool<{ accountId: string; resetEmail: string }>({
+        name: "start_recovery",
         description: "r",
         sideEffect: true,
-        // deno-lint / ts: single param => arity 1
-        authorize: (a) => Boolean(a.accountId),
+        authorize: {
+          anchor: { trustedSource: "doesNotExist" },
+          check: (a: { accountId: string; resetEmail: string }, src: unknown) =>
+            a.resetEmail === src,
+        },
         execute: () => ({ ok: true }),
       }),
     GovernanceConfigError,
-  );
-  // Caller-keyed (takes ctx) is accepted.
-  assert.doesNotThrow(() =>
-    toolkit.defineGovernedTool<{ accountId: string }>({
-      name: "reset_password",
-      description: "r",
-      sideEffect: true,
-      authorize: (a, ctx) => a.accountId === ctx.actor.id,
-      execute: () => ({ ok: true }),
-    }),
   );
 });
 

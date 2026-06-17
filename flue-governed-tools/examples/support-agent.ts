@@ -85,7 +85,10 @@ const resetPassword = toolkit.defineGovernedTool<{ accountId: string }>({
   description: "Send a password reset link for an account.",
   sideEffect: true,
   // The check High Touch Support never made: caller must control the account.
-  authorize: (a, ctx) => accounts.isControlledBy(a.accountId, ctx.actor.id),
+  authorize: {
+    anchor: "caller",
+    check: (a, ctx) => accounts.isControlledBy(a.accountId, ctx.actor.id),
+  },
   idempotency: { key: (a) => `reset:${a.accountId}` },
   execute: (a) => {
     accounts.sendResetLink(a.accountId);

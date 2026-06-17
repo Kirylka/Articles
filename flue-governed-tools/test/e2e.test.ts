@@ -55,7 +55,7 @@ function buildAgent(auditPath: string) {
     description: "send a reset link",
     sideEffect: true,
     // Caller may only reset an account they control.
-    authorize: (a, ctx) => a.accountId === ctx.actor.id,
+    authorize: { anchor: "caller", check: (a, ctx) => a.accountId === ctx.actor.id },
     idempotency: { key: (a) => `reset:${a.accountId}` },
     execute: (a) => {
       resetLinks += 1;
