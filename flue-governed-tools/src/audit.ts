@@ -30,6 +30,8 @@ export interface AuditEntry {
   requestedScopes: string[];
   requestId?: string;
   idempotencyKey?: string;
+  /** Approver id, when the call passed through an approval adapter. */
+  approver?: string;
   /** Redacted arguments. */
   args?: unknown;
   /** Redacted result, present on success/replay. */
