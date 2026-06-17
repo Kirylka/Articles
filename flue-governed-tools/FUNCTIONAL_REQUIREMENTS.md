@@ -15,7 +15,7 @@ requirement(s) it satisfies (BR-1 … BR-7).
 | ID | Requirement | Traces |
 | --- | --- | --- |
 | **FR-1.1** | The library MUST expose `defineGovernedTool(spec)` that takes a tool spec (name, description, argument schema, side-effect flag, governance policies, `execute` handler) and returns a tool object usable wherever a plain Flue tool is used. | BR-1..7 |
-| **FR-1.2** | The returned tool MUST match Flue's `ToolDef` shape (`name`, `description`, `parameters`, `execute`) so it can be wrapped with `defineTool(...)` and passed to `init({ tools })`. `parameters` is an opaque host schema (Valibot/TypeBox); `execute` receives the pre-parsed arguments (optional 2nd `hostContext`). | BR-1 |
+| **FR-1.2** | The library MUST produce a Flue `ToolDefinition` (`name`, `description`, `parameters`, `execute`) via `toFlueTool(...)`, consumable as `defineTool(toFlueTool(...))` and listed in `createAgent`'s `AgentRuntimeConfig.tools`. Per the verified API: `parameters` is an opaque schema (valibot/JSON Schema); `execute(args, signal?: AbortSignal)` MUST return `Promise<string>` (so `toFlueTool` coerces non-string results); the 2nd arg is an AbortSignal, NOT context — trusted context comes from `ContextStore`. | BR-1 |
 | **FR-1.3** | A governed tool MUST declare whether it produces an external side effect. Side-effect tools are the ones eligible for idempotency and (optionally) approval. | BR-2, BR-5 |
 | **FR-1.4** | Defining a governed tool MUST NOT require modifying or forking Flue; integration is via a thin adapter only. | BR-1 |
 

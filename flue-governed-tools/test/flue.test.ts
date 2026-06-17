@@ -6,12 +6,13 @@ import { InMemoryAuditLog } from "../src/audit.js";
 import { MissingContextError } from "../src/errors.js";
 import type { TrustedContext } from "../src/types.js";
 
-test("hostContextResolver extracts trusted context from the Flue host object", async () => {
-  // Simulate Flue passing a session/host object into execute as 2nd arg.
-  interface FlueHost {
+test("hostContextResolver extracts trusted context from a runtime host object", async () => {
+  // For non-Flue runtimes that pass a context object into execute as 2nd arg.
+  // (Flue itself passes an AbortSignal, so under Flue you'd use ContextStore.)
+  interface RuntimeHost {
     session: { userId: string; tenant: string };
   }
-  const resolver = hostContextResolver<FlueHost>((host) => ({
+  const resolver = hostContextResolver<RuntimeHost>((host) => ({
     actor: { id: host.session.userId, roles: ["agent"] },
     tenantId: host.session.tenant,
     scopes: ["customer:*"],
@@ -25,7 +26,7 @@ test("hostContextResolver extracts trusted context from the Flue host object", a
     execute: (_a, ctx) => ({ tenant: ctx.tenantId, actor: ctx.actor.id }),
   });
 
-  const host: FlueHost = { session: { userId: "u-7", tenant: "globex" } };
+  const host: RuntimeHost = { session: { userId: "u-7", tenant: "globex" } };
   const result = (await tool.execute({}, host)) as TrustedContext extends never
     ? never
     : { tenant: string; actor: string };

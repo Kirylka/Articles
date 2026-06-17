@@ -46,7 +46,7 @@ That's the gap this library fills.
 Here's the tool you already have, on Flue:
 
 ```ts
-import { defineTool, init } from "@flue/runtime";
+import { createAgent, defineTool } from "@flue/runtime";
 import * as v from "valibot";
 
 const issueRefund = defineTool({
@@ -57,23 +57,27 @@ const issueRefund = defineTool({
     amount: v.number(),
     refundId: v.string(),
   }),
-  execute: (a) => billing.refund(a.customerId, a.amount),
+  execute: async (a) => {
+    await billing.refund(a.customerId, a.amount);
+    return `Refunded $${a.amount} to ${a.customerId}.`;
+  },
 });
 
-const agent = await init({ model, tools: [issueRefund] });
+const agent = createAgent(() => ({ model, tools: [issueRefund] }));
 ```
 
 Here's the same tool, governed. Same shape, a few extra lines that each map to
 one of the three things that went wrong:
 
 ```ts
-import { defineTool, init } from "@flue/runtime";
+import { createAgent, defineTool } from "@flue/runtime";
 import * as v from "valibot";
 import {
   createGovernedToolkit,
   ContextStore,
   HashChainAuditLog,
   InMemoryIdempotencyStore,
+  toFlueTool,
 } from "flue-governed-tools";
 
 // The trusted context — who the agent is acting for — is bound by YOU,
@@ -86,31 +90,41 @@ const toolkit = createGovernedToolkit({
   idempotencyStore: new InMemoryIdempotencyStore(),       // #2: at-most-once
 });
 
+// toFlueTool() coerces the result to the string Flue hands back to the model;
+// defineTool() validates args against the schema before our pipeline runs.
 const issueRefund = defineTool(
-  toolkit.defineGovernedTool<{ customerId: string; amount: number; refundId: string }>({
-    name: "issue_refund",
-    description: "Issue a refund to a customer.",
-    parameters: v.object({
-      customerId: v.string(),
-      amount: v.number(),
-      refundId: v.string(),
+  toFlueTool(
+    toolkit.defineGovernedTool<{ customerId: string; amount: number; refundId: string }>({
+      name: "issue_refund",
+      description: "Issue a refund to a customer.",
+      parameters: v.object({
+        customerId: v.string(),
+        amount: v.number(),
+        refundId: v.string(),
+      }),
+      sideEffect: true,
+
+      // #1: this call may only touch the customer it names — and the actor must
+      // be allowed that scope, or it's denied before billing is ever called.
+      scope: (a) => `customer:${a.customerId}`,
+
+      // #2: one refund per refundId, even if the agent retries ten times.
+      idempotency: { key: (a) => `refund:${a.refundId}` },
+
+      execute: async (a, gctx) => {
+        await billing.refund(gctx.tenantId, a.customerId, a.amount);
+        return `Refunded $${a.amount} to ${a.customerId}.`;
+      },
     }),
-    sideEffect: true,
-
-    // #1: this call may only touch the customer it names — and the actor must
-    // be allowed that scope, or it's denied before billing is ever called.
-    scope: (a) => `customer:${a.customerId}`,
-
-    // #2: one refund per refundId, even if the agent retries ten times.
-    idempotency: { key: (a) => `refund:${a.refundId}` },
-
-    execute: (a, gctx) => billing.refund(gctx.tenantId, a.customerId, a.amount),
-  }),
+  ),
 );
+
+const agent = createAgent(() => ({ model, tools: [issueRefund] }));
 ```
 
-And at the edge, where you actually know who the request is for, you bind the
-context for the whole run:
+And at the edge, where you actually know who the request is for (derived from
+`FlueContext`'s `req`/`env`), you bind the context for the whole run — so every
+tool call the agent makes is judged against it:
 
 ```ts
 await ctx.run(
@@ -119,7 +133,7 @@ await ctx.run(
     tenantId: "tenant-a",
     scopes: ["customer:c-100"], // this run may only act on customer c-100
   },
-  () => init({ model, tools: [issueRefund] }),
+  () => harness.prompt("the customer says they were double-charged for April"),
 );
 ```
 
@@ -216,9 +230,10 @@ chain verify clean at the end.
 ## Status & design
 
 Early and honest: this is a pre-release library, built and tested against the
-governance behavior end-to-end (50+ unit/e2e tests, including on-disk tamper
-detection). The Flue integration targets `@flue/runtime` (1.0.0-beta.1), whose
-own API is still in beta.
+governance behavior end-to-end (60 unit/e2e tests, including on-disk tamper
+detection **and tests that run a governed tool through the real `@flue/runtime`
+`defineTool` + valibot**, not a mock). The Flue integration targets
+`@flue/runtime` (1.0.0-beta.1), whose own API is still in beta.
 
 If you want the reasoning, not just the code:
 

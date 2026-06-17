@@ -226,22 +226,37 @@ Decision/outcome matrix recorded: `allow|deny` × `success|error|denied|replayed
 
 ## 9. Flue integration adapter (`flue.ts`)
 
-Validated against `@flue/runtime` v1.0.0-beta.1 (A-1 resolved):
+Validated against `@flue/runtime` v1.0.0-beta.1 by reading its `.d.ts` and
+running a governed tool through the real `defineTool` (A-1 resolved). The exact
+`ToolDefinition`:
 
-- Flue defines tools with `defineTool({ name, description, parameters,
-  execute })` and accepts them in `init({ tools: [...] })` alongside MCP
-  (`connectMcpServer().tools`) and command (`defineCommand`) tools.
-- A governed tool already has this shape, so it is consumed as
-  `defineTool(toolkit.defineGovernedTool(...))`. (FR-1.2)
-- `parameters` is a Valibot/TypeBox schema, opaque to us and converted to JSON
-  Schema by Flue at define time. We pass it through untouched; Flue validates
-  model arguments against it before calling `execute(args)` (a single,
-  pre-parsed argument). Our internal validator therefore only runs for
-  function/`{parse}` validators and is identity for opaque schemas. (C-9)
-- `FlueContext` (`{ id, payload, env, req, log, ... }`) lives in the surrounding
-  `run` scope rather than being guaranteed as a per-call argument, so
-  `ContextStore` (AsyncLocalStorage) is the primary trusted-context mechanism;
-  `hostContextResolver` remains for runtimes that hand a context to `execute`.
+```ts
+interface ToolDefinition<TParams> {
+  name: string;
+  description: string;
+  parameters: TParams;                 // valibot schema OR raw JSON Schema object
+  execute: (args, signal?: AbortSignal) => Promise<string>;
+}
+```
+
+- Tools are listed in `createAgent(() => ({ model, tools }))`'s
+  `AgentRuntimeConfig.tools`, alongside MCP (`connectMcpServer().tools`) and
+  command (`defineCommand`) tools. (There is no top-level `init`; `init` is a
+  method on the workflow context.)
+- `toFlueTool(governed)` bridges our tool to this contract: it coerces the
+  handler result to a **string** (`JSON.stringify` for non-strings) and drops
+  the `AbortSignal` so it is never read as context. Consumed as
+  `defineTool(toFlueTool(toolkit.defineGovernedTool(...)))`. (FR-1.2)
+- `parameters` (valibot/JSON Schema) is opaque to us and converted to JSON
+  Schema by Flue at define time; Flue `safeParse`s model arguments against it
+  (throwing `ToolInputValidationError`) before our pipeline runs. Our internal
+  validator is therefore identity for opaque schemas, active only for
+  function/`{parse}` validators. (C-9)
+- The 2nd `execute` argument is an **AbortSignal**, not context. `FlueContext`
+  (`{ id, payload, env, req, log, init }`) is available at the agent/workflow
+  boundary (notably `req` for auth), so trusted context is derived there and
+  propagated via `ContextStore` (AsyncLocalStorage). `hostContextResolver`
+  remains a helper for non-Flue runtimes that pass a context to `execute`.
   (FR-2.4, A-2)
 - The adapter is the single Flue-coupled point; the core is insulated, so a
   future Flue API change is contained here.

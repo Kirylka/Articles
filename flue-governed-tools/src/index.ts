@@ -8,4 +8,5 @@ export * from "./idempotency.js";
 export * from "./rbac.js";
 export * from "./approval.js";
 export * from "./toolkit.js";
-export * from "./flue.js";
+export { toFlueTool, hostContextResolver } from "./flue.js";
+export type { FlueToolDefinition } from "./flue.js";

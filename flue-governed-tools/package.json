@@ -38,7 +38,9 @@
     "example": "npm run build && node dist/examples/telecom-support-agent.js"
   },
   "devDependencies": {
+    "@flue/runtime": "^1.0.0-beta.1",
     "@types/node": "^22.0.0",
-    "typescript": "^5.5.0"
+    "typescript": "^5.5.0",
+    "valibot": "^1.4.1"
   }
 }
