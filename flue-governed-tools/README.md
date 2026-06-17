@@ -307,12 +307,26 @@ Meta case); a duplicate refund replays instead of paying twice; an
 over-threshold refund waits for approval; a cross-customer refund is denied; and
 the audit chain verifies clean at the end.
 
+For a real Flue run — an actual dispatched agent turn driving the tool through
+Flue's runtime, with a faux model instead of a paid one — there's a spike:
+
+```bash
+npm run spike
+```
+
+It dispatches two turns: the model resets the caller's own account (executes
+once, audited), then is talked into resetting someone else's (denied live, the
+side effect never runs, and the refusal surfaces to the model as a tool error).
+
 ## Is this real yet
 
-It's pre-release, and honest about it. The governance behavior is covered by 60
+It's pre-release, and honest about it. The governance behavior is covered by 72
 unit and end-to-end tests, including on-disk tamper detection and tests that run
 a governed tool through the actual `@flue/runtime` `defineTool` and valibot
-rather than a stand-in. Flue's own API is still in beta (`@flue/runtime`
+rather than a stand-in. It has also been run end to end through a real Flue
+dispatched agent turn (`npm run spike`) — proving the per-invocation binding and
+enforcement work on Flue's detached execution path, and that a denied call comes
+back to the model as a tool error. Flue's own API is still in beta (`@flue/runtime`
 1.0.0-beta.1), so expect some churn there.
 
 If you want the reasoning instead of just the code:

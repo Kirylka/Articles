@@ -275,6 +275,15 @@ interface ToolDefinition<TParams> {
   `execute`. (FR-2.4, FR-2.5, A-2)
 - The adapter is the single Flue-coupled point; the core is insulated, so a
   future Flue API change is contained here.
+- **Validated live:** `scripts/live-faux-spike.mjs` assembles the Node runtime
+  (`@flue/runtime/internal` + a faux pi-ai model) and dispatches real agent
+  turns. Confirmed end to end: Flue invokes `defineTool(toFlueTool(...))`, the
+  per-invocation `withContext` binding reaches the tool on the detached path,
+  scope enforcement denies a cross-account call (side effect never runs), and a
+  thrown `GovernanceError` is returned to the model as a tool error. Kept as an
+  opt-in `npm run spike` rather than a unit test, since it leans on Flue's
+  `internal` entrypoint (explicitly non-public) and would couple CI to Flue's
+  internal churn.
 
 ---
 

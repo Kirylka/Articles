@@ -159,13 +159,15 @@ requirement(s) it satisfies (BR-1 … BR-7).
   internal validation only runs for function/`{parse}` validators; and
   `ContextStore` (AsyncLocalStorage) is the primary context mechanism (A-2). A
   governed tool is consumed as `defineTool(toolkit.defineGovernedTool(...))`.
-- **A-2 (REFINED):** `AsyncLocalStorage` propagates context only when the caller
-  drives the prompt within its own async scope (Flue workflows/direct calls).
-  Flue's dispatched/addressable-agent path runs tools detached, so context is
-  bound per invocation via `withContext` inside `createAgent` (from the dispatch
-  payload). Validated by reading the `@flue/runtime` source; both patterns are
-  supported and tested. A live dispatched run is the remaining spike (no model
-  key in CI; needs runtime assembly).
+- **A-2 (VALIDATED LIVE):** `AsyncLocalStorage` propagates context only when the
+  caller drives the prompt within its own async scope (Flue workflows/direct
+  calls). Flue's dispatched/addressable-agent path runs tools detached, so
+  context is bound per invocation via `withContext` inside `createAgent` (from
+  the dispatch payload). Confirmed by a real dispatched agent turn through the
+  `@flue/runtime` runtime with a faux model (`npm run spike`): the bound context
+  reached the tool, scope enforcement denied a cross-account call live (side
+  effect never ran), and the thrown `GovernanceError` surfaced to the model as a
+  tool error. Both patterns are supported and tested.
 - **A-3 (REVISED):** Side-effecting calls use a pre/post split (an `executing`
   intent record before the handler, an outcome record after) so a side effect
   cannot run unrecorded; non-side-effecting calls, denials, replays, and
