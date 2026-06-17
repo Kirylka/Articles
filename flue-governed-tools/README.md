@@ -1,46 +1,70 @@
 # flue-governed-tools
 
-> Open-source, in-process governance for [Flue](https://github.com/badlogic/flue)
-> tools: **tenant-scoped execution, idempotent external writes, and
-> tamper-evident audit logs.**
+*In-process governance for [Flue](https://github.com/withastro/flue) tools:
+tenant-scoped execution, idempotent external writes, and a tamper-evident audit
+trail.*
 
-Flue is a sandbox agent framework with real harness control — tools, skills,
-sessions, sandboxing, MCP adapters, workflows, observability. It gates *what* an
-agent can do by harness state. But when a tool causes a **real-world side
-effect** — a refund, an appointment, an account change, a ticket update — teams
-still need application-level guarantees about *who* may do it, *for which
-tenant*, with *what side-effect guarantee*.
+---
 
-`flue-governed-tools` is a small library that adds exactly that, **in-process**,
-without routing your tool execution through an external platform.
+## The night the refund bot went sideways
 
-| Layer | Controls |
-| --- | --- |
-| **Flue** | *What* the agent can do in a harness / session / state |
-| **flue-governed-tools** | *Who* may do it, *for which tenant*, with *what side-effect guarantee* |
+You built a support agent on Flue. It's good. A customer types "you charged me
+twice for April," the agent looks up the account, confirms the double charge,
+and calls your `issue_refund` tool. Demo goes great. You ship it.
 
-> Flue can gate tools by harness state. `flue-governed-tools` gates side effects
-> by identity, tenant scope, idempotency policy, and audit guarantees.
+Three weeks later, three things have happened that nobody demoed:
 
-## Why not a managed control plane?
+1. A customer on **tenant A** asked about **tenant B's** invoice (they pasted
+   the wrong link). The model, trying to be helpful, called `issue_refund` with
+   tenant B's customer id. The refund went through. Two companies' data just
+   touched in a way your org chart says can never happen.
 
-Platforms like TrueFoundry are managed control planes/gateways: governance,
-approvals, and PII guardrails added by routing tool execution through an
-external service. This is the opposite shape — **a small OSS, Flue-native,
-in-process library** for teams that want governance inside their own harness
-with no external routing. Approval gates are becoming a standard primitive, so
-here they are a thin *adapter*, not the product. The hero is the combination of
-trusted tenant scope + idempotency + tamper-evidence.
+2. The agent issued a refund, the upstream gateway timed out, the agent
+   *retried* — and the customer got refunded **twice**. The tool ran twice
+   because, to the model, retrying a failed step is just good sense.
 
-## Install
+3. Finance emails: "Can you show us every refund the bot issued last month, and
+   prove the log wasn't edited?" You have... console logs. In CloudWatch.
+   Interleaved with everything else. Unsigned.
 
-```bash
-npm install flue-governed-tools
+None of these are Flue's fault. Flue gave you sandboxing, sessions, MCP, tools,
+and it'll happily gate a tool by harness state. But "this customer's agent must
+never act on another tenant," "this refund must happen at most once," and "this
+log must be provably unaltered" aren't harness-state questions. They're
+**application** questions, and they live right at the tool boundary.
+
+That's the gap this library fills.
+
+> Flue gates tools by *what the agent can do in a given state*.
+> `flue-governed-tools` gates side effects by *who's asking, for which tenant,
+> with what guarantee.*
+
+---
+
+## The fix is one wrapper
+
+Here's the tool you already have, on Flue:
+
+```ts
+import { defineTool, init } from "@flue/runtime";
+import * as v from "valibot";
+
+const issueRefund = defineTool({
+  name: "issue_refund",
+  description: "Issue a refund to a customer.",
+  parameters: v.object({
+    customerId: v.string(),
+    amount: v.number(),
+    refundId: v.string(),
+  }),
+  execute: (a) => billing.refund(a.customerId, a.amount),
+});
+
+const agent = await init({ model, tools: [issueRefund] });
 ```
 
-Zero runtime dependencies. Node.js ≥ 20, TypeScript-first. MIT licensed.
-
-## Quickstart
+Here's the same tool, governed. Same shape, a few extra lines that each map to
+one of the three things that went wrong:
 
 ```ts
 import { defineTool, init } from "@flue/runtime";
@@ -52,16 +76,16 @@ import {
   InMemoryIdempotencyStore,
 } from "flue-governed-tools";
 
-// Trusted context is bound by your harness — never by the model.
-const contextStore = new ContextStore();
+// The trusted context — who the agent is acting for — is bound by YOU,
+// at the edge of the request. The model never sees it and can never set it.
+const ctx = new ContextStore();
 
 const toolkit = createGovernedToolkit({
-  context: contextStore.resolver(),
-  audit: new HashChainAuditLog({ path: "audit.jsonl" }),
-  idempotencyStore: new InMemoryIdempotencyStore(),
+  context: ctx.resolver(),
+  audit: new HashChainAuditLog({ path: "audit.jsonl" }), // #3: tamper-evident
+  idempotencyStore: new InMemoryIdempotencyStore(),       // #2: at-most-once
 });
 
-// A governed tool has Flue's ToolDef shape, so wrap it with defineTool().
 const issueRefund = defineTool(
   toolkit.defineGovernedTool<{ customerId: string; amount: number; refundId: string }>({
     name: "issue_refund",
@@ -72,100 +96,137 @@ const issueRefund = defineTool(
       refundId: v.string(),
     }),
     sideEffect: true,
-    requireRoles: ["support_agent"],
-    // The scope this call touches — checked against the actor's allowed scopes.
-    scope: (a) => `customer:${a.customerId}`,
-    // One refund per logical operation, even if the agent retries.
-    idempotency: { key: (a) => `refund:${a.refundId}` },
-    // Anything over $50 needs sign-off (delegated to your approval adapter).
-    approval: (a) => a.amount > 50 && "exceeds $50",
-    execute: (a, ctx) => billing.refund(ctx.tenantId, a.customerId, a.amount),
-  }),
-);
 
-// Bind the trusted context for the duration of the run, then init the agent:
-await contextStore.run(
-  {
-    actor: { id: "agent-1", roles: ["support_agent"] },
-    tenantId: "acme",
-    scopes: ["customer:c-100"],
-  },
-  () => init({ model: "anthropic/claude-sonnet-4-6", tools: [issueRefund] }),
+    // #1: this call may only touch the customer it names — and the actor must
+    // be allowed that scope, or it's denied before billing is ever called.
+    scope: (a) => `customer:${a.customerId}`,
+
+    // #2: one refund per refundId, even if the agent retries ten times.
+    idempotency: { key: (a) => `refund:${a.refundId}` },
+
+    execute: (a, gctx) => billing.refund(gctx.tenantId, a.customerId, a.amount),
+  }),
 );
 ```
 
-> Flue parses model arguments against the Valibot `parameters` schema before
-> calling the handler; the governance pipeline then runs on the parsed args.
-> `parameters` is opaque to this library, so any schema Flue accepts works.
+And at the edge, where you actually know who the request is for, you bind the
+context for the whole run:
 
-A cross-tenant call is **blocked**, a duplicate refund is **replayed** (the
-side effect runs once), and every call appends a chained, verifiable audit
-record.
+```ts
+await ctx.run(
+  {
+    actor: { id: "agent-1", roles: ["support_agent"] },
+    tenantId: "tenant-a",
+    scopes: ["customer:c-100"], // this run may only act on customer c-100
+  },
+  () => init({ model, tools: [issueRefund] }),
+);
+```
 
-## What each governed tool gives you
+Now replay those three nights:
 
-The pipeline runs in a fixed order on every call:
+1. The agent tries to refund tenant B's customer `c-999`. The scope it needs
+   (`customer:c-999`) isn't in this run's allowed scopes. **Denied before
+   `billing.refund` runs**, and the denial is written to the audit log.
+2. The gateway times out, the agent retries the same `refundId`. The second
+   call **replays the first result** instead of charging again. `billing` sees
+   one refund.
+3. Finance gets `audit.jsonl`: one hash-chained line per call, decision and
+   outcome included. Change any past line and `verifyChain()` tells you exactly
+   where. Add an HMAC key and a full rewrite can't be forged either.
+
+---
+
+## What you actually control
+
+The one idea worth slowing down for: **the model controls the arguments; you
+control the context.**
+
+- `parameters` (the `customerId`, the `amount`) come from the model. Treat them
+  as untrusted — that's the whole point.
+- The **trusted context** (`actor`, `tenantId`, `scopes`) comes from your
+  authenticated request and rides along out-of-band via `ContextStore`
+  (`AsyncLocalStorage`). The model can't read it, can't forge it, can't argue
+  with it.
+
+`scope(args, ctx)` is where the two meet: you derive *what this call wants to
+touch* from the arguments, and the library checks it against *what this actor is
+allowed to touch* from the context. That single check is your tenant wall.
+
+---
+
+## The pipeline, in order
+
+Every governed call runs the same gauntlet before (and after) your handler:
 
 ```
 context → validate → RBAC → scope → approval → idempotency → execute → audit
 ```
 
-- **Tenant-scope enforcement** — calls outside the actor's allowed scopes are
-  denied before the handler runs.
-- **Idempotent external writes** — at-most-once per idempotency key, with replay.
-- **Tamper-evident audit trail** — one hash-chained record per call;
-  `verifyChain()` detects any after-the-fact edit.
-- **RBAC**, **approval**, and **PII redaction** as swappable adapters.
+Each step can stop the call, and exactly one audit record is written no matter
+what happens — allow or deny, success, replay, or error.
 
-Everything cross-cutting is a pluggable interface with an in-process default:
-`ContextResolver`, `RbacAdapter`, `ApprovalAdapter`, `IdempotencyStore`,
-`AuditLog`, `Redactor`. Supply your own (Redis/Postgres idempotency, a WORM
-audit sink, an external policy provider) without touching tool code.
+- **Scope / tenant** — the wall between customers and tenants.
+- **Idempotency** — at-most-once external writes, with replay on retry.
+- **Audit** — one tamper-evident, hash-chained record per call.
+- **RBAC**, **approval**, and **PII redaction** — there when you need them, as
+  swappable adapters rather than the main event.
 
-## Hardening & integrations
+## When you outgrow the defaults
 
-**Keyed (HMAC) audit chain.** Plain SHA-256 chaining detects edits to history;
-an HMAC key additionally stops an attacker who can rewrite the whole file from
-forging a valid chain. Still zero-dependency:
+Everything cross-cutting is an interface with an in-process default you can
+replace without touching a single tool:
+
+| Concern | Default (in-process) | Swap in |
+| --- | --- | --- |
+| Idempotency | `InMemoryIdempotencyStore` | Redis / Postgres with atomic claim |
+| Audit sink | `HashChainAuditLog` (JSONL) | a DB / WORM / object-store backend |
+| Approval | *(none — fail closed)* | Slack, a ticket, Flue session state |
+| RBAC | any-of role match | OPA / your permissions service |
+| Redaction | regex defaults | OpenRedaction, `@redactpii/node` via `textRedactor` |
+
+Two small hardening switches worth knowing about:
 
 ```ts
+// Keyed audit: a full-file rewrite can't forge a valid chain without the key.
 new HashChainAuditLog({ path: "audit.jsonl", hmacKey: process.env.AUDIT_KEY });
-// verify later with the same key:
-verifyChain(entries, process.env.AUDIT_KEY);
-```
 
-**Deeper PII redaction.** The default redactor covers common cases. For richer
-coverage, adapt any string-based redaction library (e.g.
-[OpenRedaction](https://openredaction.com/),
-[`@redactpii/node`](https://www.npmjs.com/package/@redactpii/node)) — no hard
-dependency added:
-
-```ts
+// Deeper PII redaction without taking a dependency here:
 import { redactString } from "@redactpii/node";
-const toolkit = createGovernedToolkit({
-  redaction: textRedactor((s) => redactString(s)),
-  /* ... */
-});
+createGovernedToolkit({ redaction: textRedactor((s) => redactString(s)), /* … */ });
 ```
 
-## Example
+---
 
-A runnable telecom support agent (with a mock `init()` standing in for Flue):
+## See it run
+
+There's a runnable telecom support agent (a tiny mock stands in for the model,
+so it runs with zero setup):
 
 ```bash
 npm run example
 ```
 
-It demonstrates scope blocking, idempotent replay, approval, and audit-chain
-verification end to end.
+You'll watch a cross-tenant refund get blocked, a duplicate refund get replayed
+instead of re-issued, an over-threshold refund wait for approval, and the audit
+chain verify clean at the end.
 
-## Design docs
+---
 
-- [`BUSINESS_REQUIREMENTS.md`](./BUSINESS_REQUIREMENTS.md)
-- [`FUNCTIONAL_REQUIREMENTS.md`](./FUNCTIONAL_REQUIREMENTS.md)
-- [`TECH_ARCHITECTURE.md`](./TECH_ARCHITECTURE.md)
-- [`TASK_SPECS.md`](./TASK_SPECS.md)
+## Status & design
+
+Early and honest: this is a pre-release library, built and tested against the
+governance behavior end-to-end (50+ unit/e2e tests, including on-disk tamper
+detection). The Flue integration targets `@flue/runtime` (1.0.0-beta.1), whose
+own API is still in beta.
+
+If you want the reasoning, not just the code:
+
+- [`BUSINESS_REQUIREMENTS.md`](./BUSINESS_REQUIREMENTS.md) — the wedge and why it exists
+- [`FUNCTIONAL_REQUIREMENTS.md`](./FUNCTIONAL_REQUIREMENTS.md) — what it must do
+- [`TECH_ARCHITECTURE.md`](./TECH_ARCHITECTURE.md) — how it's built
+- [`TASK_SPECS.md`](./TASK_SPECS.md) — the work, broken down
 
 ## License
 
-[MIT](./LICENSE)
+[MIT](./LICENSE). As free as it gets.
