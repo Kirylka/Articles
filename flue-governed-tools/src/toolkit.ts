@@ -88,9 +88,14 @@ export interface GovernedToolSpec<TArgs, TResult> {
    */
   kind?: "scoped" | "primitive";
   /**
-   * For a side-effecting `primitive`: acknowledges its blast radius is bounded
-   * out-of-band — egress allowlist, no in-sandbox credential, DB-level controls
-   * — since in-process argument scoping cannot.
+   * For a side-effecting `primitive`: your **attestation** that its blast radius
+   * is bounded out-of-band (egress allowlist, no in-sandbox credential,
+   * DB-level controls), since in-process argument scoping cannot bound it.
+   *
+   * This is NOT verified or enforced by the library — it can't check your egress
+   * config. Setting it only lets the tool define; the containment is the
+   * substrate's job. The library's contribution is to refuse to silently
+   * certify a primitive as governed and to flag it broad in the audit.
    */
   egressControlled?: boolean;
   /**

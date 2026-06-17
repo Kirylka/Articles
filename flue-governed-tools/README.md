@@ -172,10 +172,10 @@ So tools are classified by `kind`:
 - **`"scoped"`** (default): structured args, a real target → fully governed
   in-process by `scope`/`authorize`.
 - **`"primitive"`**: free-form payload. A side-effecting primitive **won't
-  define** unless you acknowledge that its blast radius is bounded *out-of-band*
-  — `egressControlled: true` (egress allowlist, no in-sandbox credential,
-  DB-level controls) — because in-process scoping can't. Primitives are flagged
-  as **broad** in the audit so a reviewer sees them.
+  define** unless you set `egressControlled: true`, your attestation that its
+  blast radius is bounded *out-of-band* (egress allowlist, no in-sandbox
+  credential, DB-level controls). Primitives are flagged as **broad** in the
+  audit so a reviewer sees them.
 
 ```ts
 toolkit.tool({
@@ -184,15 +184,19 @@ toolkit.tool({
   parameters: v.object({ query: v.string() }),
   sideEffect: true,
   kind: "primitive",
-  egressControlled: true,   // bounded by a read-replica + egress allowlist, not by args
+  egressControlled: true,   // YOUR attestation: bounded by a read-replica + egress allowlist
   execute: (a, c) => db.run(c.tenantId, a.query),
 });
 ```
 
-This is the honest division of labor: scoped tools get full governance here;
-general primitives are pushed to the substrate (egress, DB) where their payload
-can actually be contained — and the library makes you say so rather than let a
-broad, credentialed tool masquerade as governed.
+Be clear about what this is and isn't. The library **does not verify or enforce**
+that containment — `egressControlled` is a developer attestation, not a control
+it can check (that containment lives in the substrate: egress, DB, the absent
+credential). Its only two jobs for a primitive are honest ones it *can* back:
+**refuse to silently certify** a broad, credentialed tool as "governed," and
+**flag it broad in the audit**. Enforcing the containment is the substrate's job
+(Cloudflare egress, DB row-security); this just stops a primitive from
+masquerading as governed and makes its breadth visible.
 
 ## Binding context: two patterns
 
