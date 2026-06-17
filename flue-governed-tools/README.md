@@ -249,6 +249,24 @@ import { redactString } from "@redactpii/node";
 createGovernedToolkit({ redaction: textRedactor((s) => redactString(s)), /* … */ });
 ```
 
+## Running on the edge (Cloudflare Workers, Vercel)
+
+The core is runtime-agnostic, but two defaults are Node-only: `HashChainAuditLog`
+uses the filesystem, and hashing uses `node:crypto`. For edge runtimes:
+
+- Hashing has a **Web Crypto** path — `hashEntryAsync` / `verifyChainAsync` —
+  that produces byte-identical chains to the Node one, so it works where only
+  `crypto.subtle` exists. (`ContextStore` relies on `AsyncLocalStorage`, which
+  Cloudflare Workers supports under `nodejs_compat`; on the dispatched path use
+  `withContext` regardless.)
+- Use durable, edge-native stores instead of the in-memory/file defaults.
+  [`examples/cloudflare-adapters.ts`](./examples/cloudflare-adapters.ts) has
+  copy-pasteable reference adapters: a **D1**-backed `AuditLog` (hash-chained via
+  Web Crypto) and a **KV**-backed `IdempotencyStore`, both written against
+  minimal interfaces and covered by tests. For strict at-most-once under
+  concurrency, back the idempotency store with a **Durable Object** (the example
+  notes where KV's eventual consistency is a limitation).
+
 ## Human-in-the-loop approval
 
 Real approvals take minutes or hours, so blocking the agent while you wait isn't
@@ -321,8 +339,9 @@ side effect never runs, and the refusal surfaces to the model as a tool error).
 
 ## Is this real yet
 
-It's pre-release, and honest about it. The governance behavior is covered by 72
-unit and end-to-end tests, including on-disk tamper detection and tests that run
+It's pre-release, and honest about it. The governance behavior is covered by 78
+unit and end-to-end tests, including on-disk tamper detection, the Web Crypto
+edge path with D1/KV adapters, and tests that run
 a governed tool through the actual `@flue/runtime` `defineTool` and valibot
 rather than a stand-in. It has also been run end to end through a real Flue
 dispatched agent turn (`npm run spike`) — proving the per-invocation binding and

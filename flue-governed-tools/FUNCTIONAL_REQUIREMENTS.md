@@ -78,6 +78,7 @@ requirement(s) it satisfies (BR-1 … BR-7).
 | **FR-7.3** | Record hashing MUST be deterministic regardless of field ordering (canonical serialization). | BR-3 |
 | **FR-7.4** | The library MUST provide a function to verify a chain and report the first inconsistency. | BR-3 |
 | **FR-7.5** | A default append-only JSONL (file) implementation and an in-memory implementation MUST be provided; the audit sink MUST be an interface for custom backends. | BR-3, BR-7 |
+| **FR-7.6** | A Web Crypto hashing path (`hashEntryAsync`/`verifyChainAsync`) MUST be provided for edge runtimes lacking `node:crypto`, producing chains byte-identical to the Node path. Reference edge adapters (Cloudflare D1 audit log, KV idempotency store) MUST be shipped as examples. | BR-3, C-1 |
 
 ### 1.8 PII redaction
 

@@ -72,6 +72,38 @@ export function hashEntry(body: AuditEntryBody, hmacKey?: string): string {
   return hasher.update(json).digest("hex");
 }
 
+function toHex(buffer: ArrayBuffer): string {
+  return Array.from(new Uint8Array(buffer), (b) =>
+    b.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
+/**
+ * Web Crypto (SubtleCrypto) variant of {@link hashEntry}, for runtimes that
+ * expose `crypto.subtle` but not `node:crypto` — e.g. Cloudflare Workers and
+ * other edge runtimes. Produces byte-identical hashes to {@link hashEntry}, so
+ * the two are interchangeable on the same chain.
+ */
+export async function hashEntryAsync(
+  body: AuditEntryBody,
+  hmacKey?: string,
+): Promise<string> {
+  const json = JSON.stringify(canonicalize(body));
+  const data = new TextEncoder().encode(json);
+  const subtle = globalThis.crypto.subtle;
+  if (hmacKey) {
+    const key = await subtle.importKey(
+      "raw",
+      new TextEncoder().encode(hmacKey),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"],
+    );
+    return toHex(await subtle.sign("HMAC", key, data));
+  }
+  return toHex(await subtle.digest("SHA-256", data));
+}
+
 /** What a caller provides; the log fills in seq, prevHash, ts and hash. */
 export type AuditInput = Omit<AuditEntryBody, "seq" | "prevHash" | "ts"> & {
   ts?: string;
@@ -107,6 +139,29 @@ export function verifyChain(
     }
     const { hash, ...body } = entry;
     if (hashEntry(body, hmacKey) !== hash) {
+      return { valid: false, brokenAt: i, reason: `content hash mismatch at seq ${i}` };
+    }
+    prevHash = hash;
+  }
+  return { valid: true };
+}
+
+/** {@link verifyChain} using Web Crypto, for edge runtimes (see {@link hashEntryAsync}). */
+export async function verifyChainAsync(
+  entries: AuditEntry[],
+  hmacKey?: string,
+): Promise<{ valid: boolean; brokenAt?: number; reason?: string }> {
+  let prevHash = GENESIS_HASH;
+  for (let i = 0; i < entries.length; i++) {
+    const entry = entries[i]!;
+    if (entry.seq !== i) {
+      return { valid: false, brokenAt: i, reason: `seq mismatch at index ${i}` };
+    }
+    if (entry.prevHash !== prevHash) {
+      return { valid: false, brokenAt: i, reason: `prevHash mismatch at seq ${i}` };
+    }
+    const { hash, ...body } = entry;
+    if ((await hashEntryAsync(body, hmacKey)) !== hash) {
       return { valid: false, brokenAt: i, reason: `content hash mismatch at seq ${i}` };
     }
     prevHash = hash;
