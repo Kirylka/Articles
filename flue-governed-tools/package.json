@@ -1,0 +1,44 @@
+{
+  "name": "flue-governed-tools",
+  "version": "0.1.0",
+  "description": "Open-source, in-process governance for Flue tools: tenant-scoped execution, idempotent external writes, and tamper-evident audit logs.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "flue",
+    "agent",
+    "tools",
+    "governance",
+    "tenant",
+    "multi-tenant",
+    "idempotency",
+    "audit-log",
+    "rbac",
+    "ai-agents"
+  ],
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    }
+  },
+  "files": [
+    "dist/src",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test \"dist/test/**/*.test.js\"",
+    "example": "npm run build && node dist/examples/telecom-support-agent.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0"
+  }
+}
