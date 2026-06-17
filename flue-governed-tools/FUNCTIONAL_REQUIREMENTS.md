@@ -36,6 +36,8 @@ requirement(s) it satisfies (BR-1 … BR-7).
 | **FR-3.2** | Before executing, the library MUST verify that every requested scope is permitted by the actor's allowed scopes; if any is not, the call MUST be denied with a scope-violation decision. | BR-1 |
 | **FR-3.3** | Scope matching MUST support a wildcard so coarse grants (e.g. `customer:*`) and exact grants both work. | BR-1 |
 | **FR-3.4** | Idempotency keys and audit records MUST be namespaced by tenant so they cannot collide or leak across tenants. | BR-1, BR-2, BR-3 |
+| **FR-3.5** | A governed tool MUST support an `authorize(args, ctx)` predicate for authorization that a static scope list cannot express (e.g. "the caller must own this target account"). A falsy result MUST deny the call and be recorded. | BR-1 |
+| **FR-3.6** | A `sideEffect: true` tool MUST declare at least one authorization gate (`scope`, `authorize`, `requireRoles`, or `approval`), or the definition MUST be rejected (fail-closed). An explicit `unsafeAllowUnauthorized` opt-out MUST be required to bypass this. | BR-1 |
 
 ### 1.4 RBAC (supporting)
 

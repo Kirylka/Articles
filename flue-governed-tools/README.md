@@ -1,73 +1,89 @@
 # flue-governed-tools
 
-*In-process governance for [Flue](https://github.com/withastro/flue) tools:
-tenant-scoped execution, idempotent external writes, and a tamper-evident audit
-trail.*
+In-process governance for [Flue](https://github.com/withastro/flue) tools:
+tenant-scoped execution, idempotent external writes, and an audit log you can
+actually prove wasn't edited.
 
 ---
 
-## The night the refund bot went sideways
+## A real example, because we just got one
 
-You built a support agent on Flue. It's good. A customer types "you charged me
-twice for April," the agent looks up the account, confirms the double charge,
-and calls your `issue_refund` tool. Demo goes great. You ship it.
+In spring 2026, attackers took over more than 20,000 Instagram accounts without
+breaking into anything. They asked.
 
-Three weeks later, three things have happened that nobody demoed:
+Meta had an AI support agent called High Touch Support that helped locked-out
+users get back into their accounts. One of its tools could trigger a password
+reset. The tool worked. The problem was what it didn't do: it never checked that
+the person asking actually owned the account they were asking about. So you
+could point it at someone else's account, get a reset link, and walk in. Even
+accounts without 2FA. The campaign ran for about seven weeks before anyone
+noticed, and the list of victims included a White House handle and a senior US
+Space Force account.
 
-1. A customer on **tenant A** asked about **tenant B's** invoice (they pasted
-   the wrong link). The model, trying to be helpful, called `issue_refund` with
-   tenant B's customer id. The refund went through. Two companies' data just
-   touched in a way your org chart says can never happen.
+(Reporting: [BleepingComputer](https://www.bleepingcomputer.com/news/security/meta-ai-support-data-breach-affects-20-000-instagram-accounts/),
+[TechCrunch](https://techcrunch.com/2026/06/01/hackers-hijacked-instagram-accounts-by-tricking-meta-ai-support-chatbot-into-granting-access/),
+[SecurityWeek](https://www.securityweek.com/meta-says-20000-instagram-accounts-hacked-via-ai-tool-abuse/).)
 
-2. The agent issued a refund, the upstream gateway timed out, the agent
-   *retried* — and the customer got refunded **twice**. The tool ran twice
-   because, to the model, retrying a failed step is just good sense.
+The model wasn't jailbroken. There was no clever prompt injection. The agent did
+a normal thing it was allowed to do, and the only thing standing between "help a
+user" and "hand over 20,000 accounts" was a check that lived nowhere. Not in the
+prompt, because prompts aren't security. It needed to live at the exact spot
+where the tool does the dangerous part: *is the person asking allowed to touch
+this account?*
 
-3. Finance emails: "Can you show us every refund the bot issued last month, and
-   prove the log wasn't edited?" You have... console logs. In CloudWatch.
-   Interleaved with everything else. Unsigned.
+That check is the whole reason this library exists.
 
-None of these are Flue's fault. Flue gave you sandboxing, sessions, MCP, tools,
-and it'll happily gate a tool by harness state. But "this customer's agent must
-never act on another tenant," "this refund must happen at most once," and "this
-log must be provably unaltered" aren't harness-state questions. They're
-**application** questions, and they live right at the tool boundary.
+## Where this fits with Flue
 
-That's the gap this library fills.
+Flue gives you a real agent harness: sandboxing, sessions, MCP, tools, the works.
+It can already say "this tool is only callable when the agent is in this state."
+That's useful, and it's not what bit Meta.
 
-> Flue gates tools by *what the agent can do in a given state*.
-> `flue-governed-tools` gates side effects by *who's asking, for which tenant,
-> with what guarantee.*
+The questions that bit Meta are different. "Is this caller allowed to act on
+*this* account?" "Did we already do this once, so don't do it again on a retry?"
+"Can we hand finance a log of every account change and show it hasn't been
+touched?" Those aren't questions about harness state. They're questions about
+the specific call, the specific caller, and the specific record. They belong
+right next to the tool, and that's where this library puts them.
 
----
+Short version: Flue decides what the agent can do. This decides who it's allowed
+to do it to, whether it's safe to do twice, and whether you can prove what it
+did.
 
-## The fix is one wrapper
+## The fix is a wrapper
 
-Here's the tool you already have, on Flue:
+Here's a support tool on plain Flue. It resets a password:
 
 ```ts
 import { createAgent, defineTool } from "@flue/runtime";
 import * as v from "valibot";
 
-const issueRefund = defineTool({
-  name: "issue_refund",
-  description: "Issue a refund to a customer.",
-  parameters: v.object({
-    customerId: v.string(),
-    amount: v.number(),
-    refundId: v.string(),
-  }),
+const resetPassword = defineTool({
+  name: "reset_password",
+  description: "Send a password reset link for an account.",
+  parameters: v.object({ accountId: v.string() }),
   execute: async (a) => {
-    await billing.refund(a.customerId, a.amount);
-    return `Refunded $${a.amount} to ${a.customerId}.`;
+    await accounts.sendResetLink(a.accountId);
+    return `Sent a reset link for ${a.accountId}.`;
   },
 });
 
-const agent = createAgent(() => ({ model, tools: [issueRefund] }));
+const agent = createAgent(() => ({ model, tools: [resetPassword] }));
 ```
 
-Here's the same tool, governed. Same shape, a few extra lines that each map to
-one of the three things that went wrong:
+This is the High Touch Support bug in miniature. Nothing checks that the caller
+is allowed to reset *that* account.
+
+Two things change the moment you wrap it with this library.
+
+First, the tool above won't even define. A `sideEffect: true` tool with no
+authorization gate throws a `GovernanceConfigError` at startup and tells you to
+add one. The exact HTS failure — a dangerous tool with the check living nowhere
+— isn't something you can ship by accident.
+
+Second, here's where the check goes. For account recovery the honest gate is
+"does the caller actually control this account," which a static list can't
+capture, so it lives in `authorize`:
 
 ```ts
 import { createAgent, defineTool } from "@flue/runtime";
@@ -80,168 +96,143 @@ import {
   toFlueTool,
 } from "flue-governed-tools";
 
-// The trusted context — who the agent is acting for — is bound by YOU,
-// at the edge of the request. The model never sees it and can never set it.
+// You set who the caller is, from your own auth — not the model, ever.
 const ctx = new ContextStore();
 
 const toolkit = createGovernedToolkit({
   context: ctx.resolver(),
-  audit: new HashChainAuditLog({ path: "audit.jsonl" }), // #3: tamper-evident
-  idempotencyStore: new InMemoryIdempotencyStore(),       // #2: at-most-once
+  audit: new HashChainAuditLog({ path: "audit.jsonl" }),
+  idempotencyStore: new InMemoryIdempotencyStore(),
 });
 
-// toFlueTool() coerces the result to the string Flue hands back to the model;
-// defineTool() validates args against the schema before our pipeline runs.
-const issueRefund = defineTool(
+const resetPassword = defineTool(
   toFlueTool(
-    toolkit.defineGovernedTool<{ customerId: string; amount: number; refundId: string }>({
-      name: "issue_refund",
-      description: "Issue a refund to a customer.",
-      parameters: v.object({
-        customerId: v.string(),
-        amount: v.number(),
-        refundId: v.string(),
-      }),
+    toolkit.defineGovernedTool<{ accountId: string }>({
+      name: "reset_password",
+      description: "Send a password reset link for an account.",
+      parameters: v.object({ accountId: v.string() }),
       sideEffect: true,
 
-      // #1: this call may only touch the customer it names — and the actor must
-      // be allowed that scope, or it's denied before billing is ever called.
-      scope: (a) => `customer:${a.customerId}`,
+      // The check HTS never made: does this caller actually control the
+      // account they're asking about? Runs before any link is sent; a false
+      // answer stops the call and logs the refusal.
+      authorize: (a, gctx) => accounts.isControlledBy(a.accountId, gctx.actor.id),
 
-      // #2: one refund per refundId, even if the agent retries ten times.
-      idempotency: { key: (a) => `refund:${a.refundId}` },
+      // A retry won't send a second reset link.
+      idempotency: { key: (a) => `reset:${a.accountId}` },
 
-      execute: async (a, gctx) => {
-        await billing.refund(gctx.tenantId, a.customerId, a.amount);
-        return `Refunded $${a.amount} to ${a.customerId}.`;
+      execute: async (a) => {
+        await accounts.sendResetLink(a.accountId);
+        return `Sent a reset link for ${a.accountId}.`;
       },
     }),
   ),
 );
 
-const agent = createAgent(() => ({ model, tools: [issueRefund] }));
+const agent = createAgent(() => ({ model, tools: [resetPassword] }));
 ```
 
-And at the edge, where you actually know who the request is for (derived from
-`FlueContext`'s `req`/`env`), you bind the context for the whole run — so every
-tool call the agent makes is judged against it:
+The caller's identity comes from your own auth, never the model. You set it once
+for the conversation, reading it off `FlueContext`'s request:
 
 ```ts
 await ctx.run(
-  {
-    actor: { id: "agent-1", roles: ["support_agent"] },
-    tenantId: "tenant-a",
-    scopes: ["customer:c-100"], // this run may only act on customer c-100
-  },
-  () => harness.prompt("the customer says they were double-charged for April"),
+  { actor: { id: "user-7", roles: ["account_holder"] }, tenantId: "app", scopes: [] },
+  () => harness.prompt("I'm locked out, can you reset my password?"),
 );
 ```
 
-Now replay those three nights:
+Now a request to reset someone else's account is refused before `sendResetLink`
+runs, and the refusal lands in the audit log. The library doesn't write
+`isControlledBy` for you — that ownership check is your business logic, and it's
+the part HTS got wrong. What it guarantees is that the check exists, runs every
+time before the side effect, and can't be quietly dropped.
 
-1. The agent tries to refund tenant B's customer `c-999`. The scope it needs
-   (`customer:c-999`) isn't in this run's allowed scopes. **Denied before
-   `billing.refund` runs**, and the denial is written to the audit log.
-2. The gateway times out, the agent retries the same `refundId`. The second
-   call **replays the first result** instead of charging again. `billing` sees
-   one refund.
-3. Finance gets `audit.jsonl`: one hash-chained line per call, decision and
-   outcome included. Change any past line and `verifyChain()` tells you exactly
-   where. Add an HMAC key and a full rewrite can't be forged either.
+## The one idea to take away
 
----
+The model controls the arguments. You control the context.
 
-## What you actually control
+The `accountId` in the call comes from the model, which means it can be anything
+the conversation talked it into. Treat it as a claim, not a fact. The trusted
+context — who the caller is, which accounts they've proven they own — comes from
+your authenticated request and travels separately, through `ContextStore`
+(`AsyncLocalStorage`). The model can't read it and can't set it.
 
-The one idea worth slowing down for: **the model controls the arguments; you
-control the context.**
+`scope(args, ctx)` is where those two meet. You say what the call wants to touch,
+the library checks it against what the caller is allowed to touch, and that
+comparison is your wall.
 
-- `parameters` (the `customerId`, the `amount`) come from the model. Treat them
-  as untrusted — that's the whole point.
-- The **trusted context** (`actor`, `tenantId`, `scopes`) comes from your
-  authenticated request and rides along out-of-band via `ContextStore`
-  (`AsyncLocalStorage`). The model can't read it, can't forge it, can't argue
-  with it.
-
-`scope(args, ctx)` is where the two meet: you derive *what this call wants to
-touch* from the arguments, and the library checks it against *what this actor is
-allowed to touch* from the context. That single check is your tenant wall.
-
----
-
-## The pipeline, in order
-
-Every governed call runs the same gauntlet before (and after) your handler:
+## What runs on every call
 
 ```
 context → validate → RBAC → scope → approval → idempotency → execute → audit
 ```
 
-Each step can stop the call, and exactly one audit record is written no matter
-what happens — allow or deny, success, replay, or error.
+Any step can stop the call, and exactly one record gets written either way:
+allowed or refused, succeeded, replayed, or errored.
 
-- **Scope / tenant** — the wall between customers and tenants.
-- **Idempotency** — at-most-once external writes, with replay on retry.
-- **Audit** — one tamper-evident, hash-chained record per call.
-- **RBAC**, **approval**, and **PII redaction** — there when you need them, as
-  swappable adapters rather than the main event.
+- **Scope** keeps a call to one account or one tenant, and keeps callers off
+  accounts that aren't theirs.
+- **Idempotency** means a retry replays the first result instead of doing the
+  thing twice.
+- **Audit** is one hash-chained line per call. Edit any past line and
+  `verifyChain()` tells you which one. Add an HMAC key and a from-scratch
+  rewrite won't pass either.
+- **RBAC**, **approval**, and **PII redaction** are there when you want them, as
+  adapters rather than the main story.
 
-## When you outgrow the defaults
+## When the defaults aren't enough
 
-Everything cross-cutting is an interface with an in-process default you can
-replace without touching a single tool:
+Every moving part is an interface with a working in-process default. Swap any of
+them without touching a tool:
 
-| Concern | Default (in-process) | Swap in |
+| Piece | Default | What you'd swap in |
 | --- | --- | --- |
-| Idempotency | `InMemoryIdempotencyStore` | Redis / Postgres with atomic claim |
-| Audit sink | `HashChainAuditLog` (JSONL) | a DB / WORM / object-store backend |
-| Approval | *(none — fail closed)* | Slack, a ticket, Flue session state |
-| RBAC | any-of role match | OPA / your permissions service |
-| Redaction | regex defaults | OpenRedaction, `@redactpii/node` via `textRedactor` |
+| Idempotency | `InMemoryIdempotencyStore` | Redis or Postgres with an atomic claim |
+| Audit | `HashChainAuditLog` (JSONL file) | a database, WORM, or object-store sink |
+| Approval | none (calls that need it are refused) | Slack, a ticket queue, Flue session state |
+| RBAC | any-of role match | OPA or your own permissions service |
+| Redaction | regex defaults | OpenRedaction or `@redactpii/node` via `textRedactor` |
 
-Two small hardening switches worth knowing about:
+Two switches worth knowing:
 
 ```ts
 // Keyed audit: a full-file rewrite can't forge a valid chain without the key.
 new HashChainAuditLog({ path: "audit.jsonl", hmacKey: process.env.AUDIT_KEY });
 
-// Deeper PII redaction without taking a dependency here:
+// Heavier PII redaction without taking on the dependency here:
 import { redactString } from "@redactpii/node";
 createGovernedToolkit({ redaction: textRedactor((s) => redactString(s)), /* … */ });
 ```
 
----
-
 ## See it run
 
-There's a runnable telecom support agent (a tiny mock stands in for the model,
-so it runs with zero setup):
+There's a small support-agent example with a mock model, so it runs with no
+setup and no API key:
 
 ```bash
 npm run example
 ```
 
-You'll watch a cross-tenant refund get blocked, a duplicate refund get replayed
-instead of re-issued, an over-threshold refund wait for approval, and the audit
-chain verify clean at the end.
+It walks through a refund tool: a cross-tenant call gets refused, a duplicate
+refund replays instead of paying twice, an over-threshold refund waits for
+approval, and the audit chain checks out clean at the end.
 
----
+## Is this real yet
 
-## Status & design
+It's pre-release, and honest about it. The governance behavior is covered by 60
+unit and end-to-end tests, including on-disk tamper detection and tests that run
+a governed tool through the actual `@flue/runtime` `defineTool` and valibot
+rather than a stand-in. Flue's own API is still in beta (`@flue/runtime`
+1.0.0-beta.1), so expect some churn there.
 
-Early and honest: this is a pre-release library, built and tested against the
-governance behavior end-to-end (60 unit/e2e tests, including on-disk tamper
-detection **and tests that run a governed tool through the real `@flue/runtime`
-`defineTool` + valibot**, not a mock). The Flue integration targets
-`@flue/runtime` (1.0.0-beta.1), whose own API is still in beta.
+If you want the reasoning instead of just the code:
 
-If you want the reasoning, not just the code:
-
-- [`BUSINESS_REQUIREMENTS.md`](./BUSINESS_REQUIREMENTS.md) — the wedge and why it exists
-- [`FUNCTIONAL_REQUIREMENTS.md`](./FUNCTIONAL_REQUIREMENTS.md) — what it must do
+- [`BUSINESS_REQUIREMENTS.md`](./BUSINESS_REQUIREMENTS.md) — why it exists
+- [`FUNCTIONAL_REQUIREMENTS.md`](./FUNCTIONAL_REQUIREMENTS.md) — what it has to do
 - [`TECH_ARCHITECTURE.md`](./TECH_ARCHITECTURE.md) — how it's built
 - [`TASK_SPECS.md`](./TASK_SPECS.md) — the work, broken down
 
 ## License
 
-[MIT](./LICENSE). As free as it gets.
+[MIT](./LICENSE).

@@ -6,6 +6,8 @@ import { InMemoryIdempotencyStore } from "../src/idempotency.js";
 import {
   AccessDeniedError,
   ApprovalDeniedError,
+  AuthorizationDeniedError,
+  GovernanceConfigError,
   MissingContextError,
   ScopeViolationError,
 } from "../src/errors.js";
@@ -120,6 +122,7 @@ test("handler error is audited as allow/error, key released, error propagated", 
     name: "refund",
     description: "issue refund",
     sideEffect: true,
+    unsafeAllowUnauthorized: true, // this test is about error handling, not auth
     idempotency: { key: () => "refund:r-x" },
     execute: () => {
       attempts += 1;
@@ -203,6 +206,56 @@ test("missing context denies with MissingContextError and audits unknown actor",
   assert.equal(entries.length, 1);
   assert.equal(entries[0]!.tenantId, "unknown");
   assert.equal(entries[0]!.decision, "deny");
+});
+
+test("authorize predicate blocks a call the caller isn't entitled to", async () => {
+  const { toolkit, audit } = setup();
+  const tool = toolkit.defineGovernedTool<{ accountId: string }>({
+    name: "reset_password",
+    description: "send a reset link",
+    sideEffect: true,
+    // The caller may only reset their own account.
+    authorize: (a, ctx) => a.accountId === ctx.actor.id,
+    execute: () => ({ sent: true }),
+  });
+
+  await assert.rejects(
+    () => tool.execute({ accountId: "victim" }),
+    AuthorizationDeniedError,
+  );
+  await tool.execute({ accountId: "a1" }); // a1 is the actor in setup()
+
+  const entries = await audit.entries();
+  assert.equal(entries[0]!.decision, "deny");
+  assert.equal(entries[0]!.error, "authorization_denied");
+  assert.equal(entries[1]!.decision, "allow");
+});
+
+test("a side-effect tool with no authorization gate is rejected at definition", () => {
+  const { toolkit } = setup();
+  assert.throws(
+    () =>
+      toolkit.defineGovernedTool({
+        name: "danger",
+        description: "ungated side effect",
+        sideEffect: true,
+        execute: () => ({ ok: true }),
+      }),
+    GovernanceConfigError,
+  );
+});
+
+test("unsafeAllowUnauthorized opts out of the side-effect gate requirement", () => {
+  const { toolkit } = setup();
+  assert.doesNotThrow(() =>
+    toolkit.defineGovernedTool({
+      name: "danger",
+      description: "explicitly ungated",
+      sideEffect: true,
+      unsafeAllowUnauthorized: true,
+      execute: () => ({ ok: true }),
+    }),
+  );
 });
 
 test("an opaque host schema (e.g. Valibot) is passed through, not parsed", async () => {

@@ -157,14 +157,17 @@ For each `execute(rawArgs, hostCtx)`:
 3. **RBAC**: `requireRoles` vs adapter. Fail ⇒ `AccessDeniedError`. (FR-4.3)
 4. **Scope**: derive requested scopes; any not covered by `ctx.scopes` ⇒
    `ScopeViolationError`. (FR-3.2)
-5. **Approval** (only if policy triggers): adapter decides; required but
+5. **Authorize** (only if declared): `authorize(args, ctx)` falsy ⇒
+   `AuthorizationDeniedError`. Expresses dynamic checks scope lists can't, e.g.
+   ownership. (FR-3.5)
+6. **Approval** (only if policy triggers): adapter decides; required but
    unconfigured or denied ⇒ `ApprovalDeniedError`. (FR-5.3/5.4)
-6. **Idempotency** (only if policy present): `begin(tenant, key, ttl)`:
+7. **Idempotency** (only if policy present): `begin(tenant, key, ttl)`:
    - `replay` ⇒ skip handler, return stored result, outcome `replayed`. (FR-6.2/6.5)
    - `in_flight` ⇒ `IdempotencyConflictError`. (FR-6.3)
    - `started` ⇒ proceed; `complete` on success, `fail` on throw. (FR-6.4)
-7. **Execute** the handler with `ExecutionContext`.
-8. **Audit**: append exactly one chained record with the decision + outcome,
+8. **Execute** the handler with `ExecutionContext`.
+9. **Audit**: append exactly one chained record with the decision + outcome,
    redacted args/result/error. Denials in steps 1–6 jump straight to this step
    with `decision: "deny"`. Handler throws ⇒ `decision: "allow"`,
    `outcome: "error"`, error re-propagated. (FR-7.1, FR-9.3)

@@ -7,8 +7,8 @@
  * returns wraps a tool spec so that every invocation runs through the same
  * deterministic pipeline before (and after) the real handler:
  *
- *   context -> validate -> RBAC -> scope -> approval -> idempotency
- *           -> execute -> audit
+ *   context -> validate -> RBAC -> scope -> authorize -> approval
+ *           -> idempotency -> execute -> audit
  *
  * Exactly one audit entry is appended per call. Governance rejections raise a
  * `GovernanceError` subclass; handler failures propagate the original error.
@@ -34,6 +34,8 @@ import { deniedScopes, normalizeScopes } from "./scope.js";
 import {
   AccessDeniedError,
   ApprovalDeniedError,
+  AuthorizationDeniedError,
+  GovernanceConfigError,
   GovernanceError,
   IdempotencyConflictError,
   ScopeViolationError,
@@ -51,6 +53,12 @@ export interface GovernedToolSpec<TArgs, TResult> {
   requireRoles?: string[];
   /** Derive the resource scope(s) this specific call will touch. */
   scope?: (args: TArgs, ctx: TrustedContext) => string | string[];
+  /**
+   * Arbitrary authorization predicate for "is this caller allowed to do this to
+   * this target?" — including ownership checks that a static scope list can't
+   * express. Return false (or a falsy value) to deny.
+   */
+  authorize?: (args: TArgs, ctx: TrustedContext) => boolean | Promise<boolean>;
   /** Idempotency policy for side-effectful writes. */
   idempotency?: {
     key: (args: TArgs, ctx: TrustedContext) => string;
@@ -60,6 +68,13 @@ export interface GovernedToolSpec<TArgs, TResult> {
   approval?: ApprovalPolicy<TArgs>;
   /** Redact args/result before they go to the audit log (per-tool override). */
   redact?: Redactor;
+  /**
+   * Escape hatch: allow a `sideEffect` tool to be defined with no authorization
+   * gate (scope/authorize/requireRoles/approval). Off by default — an ungated
+   * side-effecting tool is how account-takeover bugs ship, so we refuse it
+   * unless you say so explicitly.
+   */
+  unsafeAllowUnauthorized?: boolean;
   /** The real handler. Receives validated args and the execution context. */
   execute: (args: TArgs, ctx: ExecutionContext) => Promise<TResult> | TResult;
 }
@@ -128,6 +143,25 @@ export function createGovernedToolkit(
   function defineGovernedTool<TArgs, TResult>(
     spec: GovernedToolSpec<TArgs, TResult>,
   ): FlueCompatibleTool {
+    // Fail closed at definition time: a side-effecting tool must declare an
+    // authorization gate, or explicitly opt out. This is the structural answer
+    // to "the check lived nowhere".
+    if (spec.sideEffect && !spec.unsafeAllowUnauthorized) {
+      const gated =
+        Boolean(spec.scope) ||
+        Boolean(spec.authorize) ||
+        (spec.requireRoles?.length ?? 0) > 0 ||
+        spec.approval !== undefined;
+      if (!gated) {
+        throw new GovernanceConfigError(
+          spec.name,
+          `Side-effecting tool "${spec.name}" has no authorization gate. ` +
+            "Declare scope, authorize, requireRoles, or approval, or set " +
+            "unsafeAllowUnauthorized: true to acknowledge the risk.",
+        );
+      }
+    }
+
     const validate = makeValidator(spec.parameters);
     const redactor = spec.redact ?? baseRedactor;
     const audit = (input: AuditInput) =>
@@ -205,7 +239,13 @@ export function createGovernedToolkit(
         throw new ScopeViolationError(spec.name, denied, ctx.scopes);
       }
 
-      // 5. Approval (only when a policy is declared and triggered).
+      // 5. Authorization predicate (e.g. "caller must own this target").
+      if (spec.authorize && !(await spec.authorize(args, ctx))) {
+        await denyAudit("authorization_denied");
+        throw new AuthorizationDeniedError(spec.name);
+      }
+
+      // 6. Approval (only when a policy is declared and triggered).
       let approver: string | undefined;
       const approval = evaluateApproval(spec.approval, args, ctx);
       if (approval.needed) {
@@ -269,7 +309,7 @@ export function createGovernedToolkit(
         }
       };
 
-      // 6. Idempotency (only when declared and a store is configured).
+      // 7. Idempotency (only when declared and a store is configured).
       const key = spec.idempotency?.key(args, ctx);
       if (key && options.idempotencyStore) {
         const store = options.idempotencyStore;
@@ -329,7 +369,7 @@ export function createGovernedToolkit(
         }
       }
 
-      // 7. No idempotency: execute and audit.
+      // 8. No idempotency: execute and audit.
       return runAndAudit();
     };
 

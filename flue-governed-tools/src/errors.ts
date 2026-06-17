@@ -64,6 +64,28 @@ export class ScopeViolationError extends GovernanceError {
   }
 }
 
+/** A tool's `authorize` predicate rejected the call. */
+export class AuthorizationDeniedError extends GovernanceError {
+  constructor(tool: string, reason?: string) {
+    super(
+      "authorization_denied",
+      `"${tool}" was not authorized for this caller/target` +
+        (reason ? `: ${reason}` : "."),
+      tool,
+    );
+  }
+}
+
+/**
+ * A governed tool was defined unsafely — e.g. a side-effecting tool with no
+ * authorization gate. Thrown at definition time, not per call.
+ */
+export class GovernanceConfigError extends GovernanceError {
+  constructor(tool: string, message: string) {
+    super("config_error", message, tool);
+  }
+}
+
 /** Human (or external) approval was required and not granted. */
 export class ApprovalDeniedError extends GovernanceError {
   constructor(tool: string, reason?: string) {
