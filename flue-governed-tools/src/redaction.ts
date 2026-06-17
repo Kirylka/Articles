@@ -5,6 +5,10 @@
  * the arguments the real handler executes with. The default redactor masks a
  * few common PII shapes (emails, long digit runs that look like card/account
  * numbers) and a configurable set of sensitive field names.
+ *
+ * Redaction is intentionally a pluggable seam. For deeper coverage, plug in a
+ * dedicated string-based PII library via {@link textRedactor} — e.g.
+ * OpenRedaction or @redactpii/node — without adding a hard dependency here.
  */
 
 /** Transforms a value before it is recorded in the audit log. */
@@ -34,18 +38,16 @@ function maskString(value: string): string {
 }
 
 /**
- * Build a redactor that masks the given field names (case-insensitive) and,
- * by default, also masks emails and long digit sequences inside strings.
+ * Build a structural redactor: mask the given field names (case-insensitive)
+ * and apply `transformString` to every string value, recursing into objects
+ * and arrays. The input is never mutated.
  */
-export function redactFields(
-  fields: Iterable<string> = SENSITIVE_FIELDS,
-  options: { maskStrings?: boolean } = {},
+function makeWalker(
+  blocked: Set<string>,
+  transformString: (s: string) => string,
 ): Redactor {
-  const maskStrings = options.maskStrings ?? true;
-  const blocked = new Set([...fields].map((f) => f.toLowerCase()));
-
   const walk = (value: unknown): unknown => {
-    if (typeof value === "string") return maskStrings ? maskString(value) : value;
+    if (typeof value === "string") return transformString(value);
     if (Array.isArray(value)) return value.map(walk);
     if (value && typeof value === "object") {
       const out: Record<string, unknown> = {};
@@ -56,8 +58,46 @@ export function redactFields(
     }
     return value;
   };
-
   return walk;
+}
+
+function fieldSet(fields: Iterable<string>): Set<string> {
+  return new Set([...fields].map((f) => f.toLowerCase()));
+}
+
+/**
+ * Build a redactor that masks the given field names (case-insensitive) and,
+ * by default, also masks emails and long digit sequences inside strings.
+ */
+export function redactFields(
+  fields: Iterable<string> = SENSITIVE_FIELDS,
+  options: { maskStrings?: boolean } = {},
+): Redactor {
+  const maskStrings = options.maskStrings ?? true;
+  return makeWalker(fieldSet(fields), maskStrings ? maskString : (s) => s);
+}
+
+/**
+ * Adapt an external, string-based PII redactor (e.g. OpenRedaction or
+ * @redactpii/node) into a {@link Redactor} that walks objects/arrays and also
+ * masks sensitive field names. Lets you use a richer redaction engine without
+ * this package taking a dependency on it.
+ *
+ * ```ts
+ * import { redactString } from "@redactpii/node";
+ * const redaction = textRedactor((s) => redactString(s));
+ * ```
+ */
+export function textRedactor(
+  transform: (text: string) => string,
+  options: { fields?: Iterable<string> } = {},
+): Redactor {
+  return makeWalker(fieldSet(options.fields ?? SENSITIVE_FIELDS), transform);
+}
+
+/** Compose redactors so they run left to right. */
+export function composeRedactors(...redactors: Redactor[]): Redactor {
+  return (value) => redactors.reduce((acc, r) => r(acc), value);
 }
 
 /** The default redactor: masks common sensitive field names and PII strings. */

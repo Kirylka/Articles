@@ -111,6 +111,32 @@ Everything cross-cutting is a pluggable interface with an in-process default:
 `AuditLog`, `Redactor`. Supply your own (Redis/Postgres idempotency, a WORM
 audit sink, an external policy provider) without touching tool code.
 
+## Hardening & integrations
+
+**Keyed (HMAC) audit chain.** Plain SHA-256 chaining detects edits to history;
+an HMAC key additionally stops an attacker who can rewrite the whole file from
+forging a valid chain. Still zero-dependency:
+
+```ts
+new HashChainAuditLog({ path: "audit.jsonl", hmacKey: process.env.AUDIT_KEY });
+// verify later with the same key:
+verifyChain(entries, process.env.AUDIT_KEY);
+```
+
+**Deeper PII redaction.** The default redactor covers common cases. For richer
+coverage, adapt any string-based redaction library (e.g.
+[OpenRedaction](https://openredaction.com/),
+[`@redactpii/node`](https://www.npmjs.com/package/@redactpii/node)) — no hard
+dependency added:
+
+```ts
+import { redactString } from "@redactpii/node";
+const toolkit = createGovernedToolkit({
+  redaction: textRedactor((s) => redactString(s)),
+  /* ... */
+});
+```
+
 ## Example
 
 A runnable telecom support agent (with a mock `init()` standing in for Flue):

@@ -1,9 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
+  composeRedactors,
   defaultRedactor,
   identityRedactor,
   redactFields,
+  textRedactor,
 } from "../src/redaction.js";
 
 test("default redactor masks sensitive field names", () => {
@@ -52,4 +54,29 @@ test("redactFields accepts custom field names", () => {
 test("identityRedactor returns value unchanged", () => {
   const v = { password: "x" };
   assert.equal(identityRedactor(v), v);
+});
+
+test("textRedactor plugs in an external string redactor and masks fields", () => {
+  // Simulate an external lib (OpenRedaction / @redactpii/node) that redacts text.
+  const external = (s: string) => s.replace(/secret/gi, "[PII]");
+  const r = textRedactor(external);
+  const out = r({ note: "top secret", token: "abc", n: 5 }) as {
+    note: string;
+    token: string;
+    n: number;
+  };
+  assert.equal(out.note, "top [PII]");
+  assert.equal(out.token, "[redacted]"); // sensitive field name still masked
+  assert.equal(out.n, 5);
+});
+
+test("composeRedactors applies redactors left to right", () => {
+  const r = composeRedactors(
+    redactFields(["a"], { maskStrings: false }),
+    redactFields(["b"], { maskStrings: false }),
+  );
+  const out = r({ a: "1", b: "2", c: "3" }) as Record<string, unknown>;
+  assert.equal(out.a, "[redacted]");
+  assert.equal(out.b, "[redacted]");
+  assert.equal(out.c, "3");
 });

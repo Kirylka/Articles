@@ -99,6 +99,36 @@ test("file-backed log persists and reseeds the chain on reopen", async () => {
   }
 });
 
+test("hmac-keyed chain verifies only with the correct key", async () => {
+  const log = new InMemoryAuditLog({ hmacKey: "k-secret" });
+  await log.append(sample("lookup"));
+  await log.append(sample("refund"));
+  const entries = await log.entries();
+
+  assert.deepEqual(verifyChain(entries, "k-secret"), { valid: true });
+  // Without the key, or with the wrong key, verification fails at the start.
+  assert.equal(verifyChain(entries, "wrong-key").valid, false);
+  assert.equal(verifyChain(entries).valid, false);
+  // The log's own verify() uses its configured key.
+  assert.deepEqual(log.verify(), { valid: true });
+});
+
+test("hmac-keyed file log reseeds and stays verifiable across reopen", async () => {
+  const path = join(tmpdir(), `audit-hmac-${Date.now()}-${Math.random()}.jsonl`);
+  try {
+    const log1 = new HashChainAuditLog({ path, hmacKey: "k1" });
+    await log1.append(sample("lookup"));
+    const last = await log1.append(sample("refund"));
+
+    const log2 = new HashChainAuditLog({ path, hmacKey: "k1" });
+    const next = await log2.append(sample("close"));
+    assert.equal(next.prevHash, last.hash);
+    assert.deepEqual(log2.verify(), { valid: true });
+  } finally {
+    rmSync(path, { force: true });
+  }
+});
+
 test("records carry replay and error outcomes", async () => {
   const log = new InMemoryAuditLog();
   const replayed = await log.append({

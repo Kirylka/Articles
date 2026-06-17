@@ -185,10 +185,14 @@ Decision/outcome matrix recorded: `allow|deny` × `success|error|denied|replayed
   pointers. (FR-7.4, C-7)
 - Default sinks: `HashChainAuditLog` (append-only JSONL file) and
   `InMemoryAuditLog`; `AuditLog` is an interface for DB/WORM/S3 backends. (FR-7.5)
-- **Threat covered:** silent after-the-fact edit/deletion of history.
-  **Not covered:** an attacker who can rewrite the *entire* file from genesis
-  with a consistent chain — mitigate by exporting/anchoring the head hash
-  externally (out of scope for v0.1, noted for roadmap).
+- **Optional HMAC keying:** `hashEntry`/`verifyChain` and both log
+  implementations accept an `hmacKey`. With a key, hashing is HMAC-SHA256, so an
+  attacker who can rewrite the entire file *still* cannot forge a valid chain
+  without the key. Zero added dependencies. (Verification must use the same key.)
+- **Threat covered:** silent after-the-fact edit/deletion of history; with an
+  `hmacKey`, also full-file re-forging without key knowledge.
+  **Residual:** an attacker who obtains the HMAC key — mitigate by also
+  exporting/anchoring the head hash externally (roadmap).
 
 ---
 
