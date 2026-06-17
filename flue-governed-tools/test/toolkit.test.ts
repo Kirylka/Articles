@@ -326,6 +326,77 @@ test("a side-effect tool with no authorization gate is rejected at definition", 
   );
 });
 
+test("authorize must be caller-keyed: an arg-only (arity 1) predicate is rejected", () => {
+  const { toolkit } = setup();
+  // Arg-only check — the injection footgun. Rejected at definition.
+  assert.throws(
+    () =>
+      toolkit.defineGovernedTool<{ accountId: string }>({
+        name: "reset_password",
+        description: "r",
+        sideEffect: true,
+        // deno-lint / ts: single param => arity 1
+        authorize: (a) => Boolean(a.accountId),
+        execute: () => ({ ok: true }),
+      }),
+    GovernanceConfigError,
+  );
+  // Caller-keyed (takes ctx) is accepted.
+  assert.doesNotThrow(() =>
+    toolkit.defineGovernedTool<{ accountId: string }>({
+      name: "reset_password",
+      description: "r",
+      sideEffect: true,
+      authorize: (a, ctx) => a.accountId === ctx.actor.id,
+      execute: () => ({ ok: true }),
+    }),
+  );
+});
+
+test("side-effecting primitive needs out-of-band acknowledgement, not arg scope", () => {
+  const { toolkit } = setup();
+  const base = {
+    name: "run_sql",
+    description: "run arbitrary SQL",
+    sideEffect: true,
+    kind: "primitive" as const,
+    // A scope on a free-form payload is not enough for a primitive.
+    scope: () => "db:main",
+    execute: () => ({ rows: 0 }),
+  };
+
+  assert.throws(() => toolkit.defineGovernedTool(base), GovernanceConfigError);
+  assert.doesNotThrow(() =>
+    toolkit.defineGovernedTool({ ...base, egressControlled: true }),
+  );
+  assert.doesNotThrow(() =>
+    toolkit.defineGovernedTool({ ...base, unsafeAllowUnauthorized: true }),
+  );
+});
+
+test("primitive tools are flagged as broad in the audit; scoped tools are not", async () => {
+  const { toolkit, audit } = setup();
+  const runSql = toolkit.defineGovernedTool({
+    name: "run_sql",
+    description: "run SQL",
+    sideEffect: true,
+    kind: "primitive",
+    egressControlled: true, // bounded out-of-band
+    execute: () => ({ rows: 1 }),
+  });
+  const lookup = toolkit.defineGovernedTool({
+    name: "lookup",
+    description: "read",
+    execute: () => ({ ok: true }),
+  });
+
+  await runSql.execute({});
+  await lookup.execute({});
+  const entries = await audit.entries();
+  assert.equal(entries.find((e) => e.tool === "run_sql")!.kind, "primitive");
+  assert.equal(entries.find((e) => e.tool === "lookup")!.kind, undefined);
+});
+
 test("unsafeAllowUnauthorized opts out of the side-effect gate requirement", () => {
   const { toolkit } = setup();
   assert.doesNotThrow(() =>

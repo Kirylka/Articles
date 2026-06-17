@@ -38,7 +38,9 @@ requirement(s) it satisfies (BR-1 … BR-7).
 | **FR-3.3** | Scope matching MUST support a wildcard so coarse grants (e.g. `customer:*`) and exact grants both work. | BR-1 |
 | **FR-3.4** | Idempotency keys and audit records MUST be namespaced by tenant so they cannot collide or leak across tenants. | BR-1, BR-2, BR-3 |
 | **FR-3.5** | A governed tool MUST support an `authorize(args, ctx)` predicate for authorization that a static scope list cannot express (e.g. "the caller must own this target account"). A falsy result MUST deny the call and be recorded. | BR-1 |
-| **FR-3.6** | A `sideEffect: true` tool MUST declare at least one authorization gate (`scope`, `authorize`, `requireRoles`, or `approval`), or the definition MUST be rejected (fail-closed). An explicit `unsafeAllowUnauthorized` opt-out MUST be required to bypass this. | BR-1 |
+| **FR-3.6** | A `sideEffect: true` `"scoped"` tool MUST declare at least one authorization gate (`scope`, `authorize`, `requireRoles`, or `approval`), or the definition MUST be rejected (fail-closed). An explicit `unsafeAllowUnauthorized` opt-out MUST be required to bypass this. | BR-1 |
+| **FR-3.7** | `authorize` MUST be keyed to the trusted caller, not the arguments alone. An arg-only predicate (one that does not take the context, arity < 2) MUST be rejected at definition — an arg-only check passes the injection it should stop. | BR-1 |
+| **FR-3.8** | Tools MUST be classifiable by `kind` (`"scoped"` default, or `"primitive"` for free-form payloads like raw SQL/shell/HTTP). A side-effecting `primitive` MUST NOT rely on argument scoping: it MUST declare `egressControlled` (bounded out-of-band) or be rejected, and MUST be flagged as broad in the audit trail. | BR-1, BR-3 |
 
 ### 1.4 RBAC (supporting)
 

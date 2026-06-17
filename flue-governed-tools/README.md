@@ -150,9 +150,49 @@ context — who the caller is, which accounts they've proven they own — comes 
 your authenticated request and travels separately, through `ContextStore`
 (`AsyncLocalStorage`). The model can't read it and can't set it.
 
-`scope(args, ctx)` is where those two meet. You say what the call wants to touch,
-the library checks it against what the caller is allowed to touch, and that
-comparison is your wall.
+`scope(args, ctx)` is where those two meet, and it's deliberately the safe
+shape: you say what the call *wants to touch*, the library compares it to what
+the **caller** is allowed to touch. You never write the comparison, so you can't
+forget to involve the caller — which is the mistake that defeats a check from
+the inside (`authorize: (a) => accountExists(a.target)` passes the injection;
+the attack succeeds *through* the check). When you need a dynamic check `scope`
+can't express, `authorize` must be keyed to the caller — `(args, ctx) =>
+owns(ctx.actor.id, args.target)` — and the library rejects an arg-only
+`authorize` at definition so the footgun doesn't compile.
+
+## Scoped tools vs general primitives
+
+Not every tool can be governed by argument scoping. A `reset_password(accountId)`
+has a real *target* you can check against the caller. A `run_sql(query)`, a
+shell tool, or a generic `http_request(url, body)` doesn't — the argument *is*
+free-form code, and no in-process check can bind what the model writes into it.
+
+So tools are classified by `kind`:
+
+- **`"scoped"`** (default): structured args, a real target → fully governed
+  in-process by `scope`/`authorize`.
+- **`"primitive"`**: free-form payload. A side-effecting primitive **won't
+  define** unless you acknowledge that its blast radius is bounded *out-of-band*
+  — `egressControlled: true` (egress allowlist, no in-sandbox credential,
+  DB-level controls) — because in-process scoping can't. Primitives are flagged
+  as **broad** in the audit so a reviewer sees them.
+
+```ts
+toolkit.tool({
+  name: "run_sql",
+  description: "Run a read query.",
+  parameters: v.object({ query: v.string() }),
+  sideEffect: true,
+  kind: "primitive",
+  egressControlled: true,   // bounded by a read-replica + egress allowlist, not by args
+  execute: (a, c) => db.run(c.tenantId, a.query),
+});
+```
+
+This is the honest division of labor: scoped tools get full governance here;
+general primitives are pushed to the substrate (egress, DB) where their payload
+can actually be contained — and the library makes you say so rather than let a
+broad, credentialed tool masquerade as governed.
 
 ## Binding context: two patterns
 
@@ -331,7 +371,7 @@ side effect never runs, and the refusal surfaces to the model as a tool error).
 
 ## Is this real yet
 
-It's pre-release, and honest about it. The governance behavior is covered by 84
+It's pre-release, and honest about it. The governance behavior is covered by 87
 unit and end-to-end tests, including on-disk tamper detection, the Web Crypto
 edge path with D1/KV adapters, and tests that run
 a governed tool through the actual `@flue/runtime` `defineTool` and valibot

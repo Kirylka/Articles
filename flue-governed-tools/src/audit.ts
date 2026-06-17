@@ -25,6 +25,8 @@ export interface AuditEntry {
   actorId: string;
   tenantId: string;
   tool: string;
+  /** Present and `"primitive"` for broad, free-form-payload tools. */
+  kind?: "primitive";
   decision: Decision;
   outcome: Outcome;
   requestedScopes: string[];

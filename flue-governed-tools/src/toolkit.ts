@@ -78,6 +78,22 @@ export interface GovernedToolSpec<TArgs, TResult> {
   /** Redact args/result before they go to the audit log (per-tool override). */
   redact?: Redactor;
   /**
+   * How the tool's arguments relate to its blast radius (default `"scoped"`):
+   *  - `"scoped"`: structured args with a real target — fully governable
+   *    in-process by scope/authorize.
+   *  - `"primitive"`: a free-form payload (raw SQL, shell, arbitrary HTTP, a
+   *    code interpreter). Argument scoping can't constrain it, so a
+   *    side-effecting primitive must be bounded out-of-band (see
+   *    {@link egressControlled}). Primitives are flagged as broad in the audit.
+   */
+  kind?: "scoped" | "primitive";
+  /**
+   * For a side-effecting `primitive`: acknowledges its blast radius is bounded
+   * out-of-band — egress allowlist, no in-sandbox credential, DB-level controls
+   * — since in-process argument scoping cannot.
+   */
+  egressControlled?: boolean;
+  /**
    * Escape hatch: allow a `sideEffect` tool to be defined with no authorization
    * gate (scope/authorize/requireRoles/approval). Off by default — an ungated
    * side-effecting tool is how account-takeover bugs ship, so we refuse it
@@ -224,22 +240,51 @@ export function createGovernedToolkit(
     function defineGovernedTool<TArgs, TResult>(
       spec: GovernedToolSpec<TArgs, TResult>,
     ): FlueCompatibleTool {
-    // Fail closed at definition time: a side-effecting tool must declare an
-    // authorization gate, or explicitly opt out. This is the structural answer
-    // to "the check lived nowhere".
+    // `authorize` must be keyed to the trusted caller, not just validate the
+    // arguments — an arg-only check passes the injection it's meant to stop.
+    // Require it to at least take the context (arity >= 2); an arg-only
+    // predicate is rejected with a teaching message.
+    if (spec.authorize && spec.authorize.length < 2) {
+      throw new GovernanceConfigError(
+        spec.name,
+        `authorize for "${spec.name}" must take the trusted context as its ` +
+          "second argument and key the decision to the caller — e.g. " +
+          "(args, ctx) => owns(ctx.actor.id, args.target). An arg-only check " +
+          "passes the very injection it should stop.",
+      );
+    }
+
+    // Fail closed at definition time: a side-effecting tool must be gated.
+    // The required gate differs by `kind` (the structural answer to both "the
+    // check lived nowhere" and "general primitives can't be arg-scoped").
     if (spec.sideEffect && !spec.unsafeAllowUnauthorized) {
-      const gated =
-        Boolean(spec.scope) ||
-        Boolean(spec.authorize) ||
-        (spec.requireRoles?.length ?? 0) > 0 ||
-        spec.approval !== undefined;
-      if (!gated) {
-        throw new GovernanceConfigError(
-          spec.name,
-          `Side-effecting tool "${spec.name}" has no authorization gate. ` +
-            "Declare scope, authorize, requireRoles, or approval, or set " +
-            "unsafeAllowUnauthorized: true to acknowledge the risk.",
-        );
+      if ((spec.kind ?? "scoped") === "primitive") {
+        // A free-form payload (raw SQL, shell, arbitrary HTTP) can't be bound
+        // by in-process argument scoping — enforcement must live out-of-band.
+        if (!spec.egressControlled) {
+          throw new GovernanceConfigError(
+            spec.name,
+            `Side-effecting primitive "${spec.name}" can't be governed by ` +
+              "argument scoping — its payload is free-form. Bound its blast " +
+              "radius out-of-band (egress allowlist / no in-sandbox credential " +
+              "/ DB-level controls) and set egressControlled: true, or set " +
+              "unsafeAllowUnauthorized: true to acknowledge the risk.",
+          );
+        }
+      } else {
+        const gated =
+          Boolean(spec.scope) ||
+          Boolean(spec.authorize) ||
+          (spec.requireRoles?.length ?? 0) > 0 ||
+          spec.approval !== undefined;
+        if (!gated) {
+          throw new GovernanceConfigError(
+            spec.name,
+            `Side-effecting tool "${spec.name}" has no authorization gate. ` +
+              "Declare scope, authorize, requireRoles, or approval, or set " +
+              "unsafeAllowUnauthorized: true to acknowledge the risk.",
+          );
+        }
       }
     }
 
@@ -275,6 +320,9 @@ export function createGovernedToolkit(
         tenantId: ctx.tenantId,
         tool: spec.name,
         requestId: ctx.requestId,
+        // Flag broad tools in the audit; omit for the common scoped case so
+        // existing entries are unchanged.
+        ...(spec.kind === "primitive" ? { kind: "primitive" as const } : {}),
       };
 
       // 2. Validate arguments.
