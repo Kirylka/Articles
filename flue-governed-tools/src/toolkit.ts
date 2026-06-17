@@ -23,12 +23,14 @@ import type {
   ArgValidator,
   ExecutionContext,
   FlueCompatibleTool,
+  InferArgs,
   ParseValidator,
+  StandardSchemaV1,
   TrustedContext,
 } from "./types.js";
-import type { ContextResolver } from "./context.js";
+import type { ContextResolver, ContextStore } from "./context.js";
 import type { AuditLog, AuditInput } from "./audit.js";
-import type { IdempotencyStore } from "./idempotency.js";
+import { InMemoryIdempotencyStore, type IdempotencyStore } from "./idempotency.js";
 import { defaultRbac, type RbacAdapter } from "./rbac.js";
 import {
   type ApprovalAdapter,
@@ -36,6 +38,7 @@ import {
 } from "./approval.js";
 import { defaultRedactor, type Redactor } from "./redaction.js";
 import { deniedScopes, normalizeScopes } from "./scope.js";
+import { toFlueTool, type FlueToolDefinition } from "./flue.js";
 import {
   AccessDeniedError,
   ApprovalDeniedError,
@@ -85,13 +88,35 @@ export interface GovernedToolSpec<TArgs, TResult> {
   execute: (args: TArgs, ctx: ExecutionContext) => Promise<TResult> | TResult;
 }
 
+/**
+ * The spec for {@link GovernedToolkit.tool}: same as {@link GovernedToolSpec},
+ * but `parameters` is a Standard Schema (e.g. a Valibot `v.object(...)`) and the
+ * argument type of every callback is **inferred** from it — no need to restate
+ * it as a generic.
+ */
+export type GovernedFlueToolSpec<S extends StandardSchemaV1, TResult> = Omit<
+  GovernedToolSpec<InferArgs<S>, TResult>,
+  "parameters"
+> & { parameters: S };
+
+/** Flue's `defineTool`, injected so the core stays free of any Flue import. */
+export type FlueDefineTool = (tool: FlueToolDefinition) => FlueToolDefinition;
+
 export interface GovernedToolkitOptions {
-  /** Resolves the trusted context for each call (never from model output). */
-  context: ContextResolver;
+  /**
+   * Trusted-context source (never model output). Pass a {@link ContextStore}
+   * directly, or a resolver function.
+   */
+  context: ContextStore | ContextResolver;
   /** Audit sink. */
   audit: AuditLog;
-  /** Idempotency store (required for tools that declare an idempotency key). */
+  /** Idempotency store. Defaults to a process-local in-memory store. */
   idempotencyStore?: IdempotencyStore;
+  /**
+   * Flue's `defineTool` (from `@flue/runtime`). Provide it to enable the
+   * one-call {@link GovernedToolkit.tool} helper.
+   */
+  defineTool?: FlueDefineTool;
   /** RBAC adapter (defaults to any-of role matching). */
   rbac?: RbacAdapter;
   /** Approval adapter (fail-closed if a tool requires approval without one). */
@@ -115,6 +140,15 @@ export interface GovernedToolkit {
    * All other collaborators (audit, idempotency, adapters) are shared.
    */
   withContext(context: TrustedContext | ContextResolver): GovernedToolkit;
+  /**
+   * One-call helper: define a governed tool and return a ready-to-use Flue
+   * `ToolDefinition` (equivalent to `defineTool(toFlueTool(defineGovernedTool(
+   * spec)))`). Argument types are inferred from `parameters`. Requires
+   * `defineTool` to have been passed to {@link createGovernedToolkit}.
+   */
+  tool<S extends StandardSchemaV1, TResult = unknown>(
+    spec: GovernedFlueToolSpec<S, TResult>,
+  ): FlueToolDefinition;
 }
 
 function makeValidator<T>(v?: ArgValidator<T>): (input: unknown) => T {
@@ -152,6 +186,9 @@ export function createGovernedToolkit(
 ): GovernedToolkit {
   const rbac = options.rbac ?? defaultRbac;
   const baseRedactor = options.redaction ?? defaultRedactor;
+  const idempotencyStore =
+    options.idempotencyStore ?? new InMemoryIdempotencyStore();
+  const defineToolFn = options.defineTool;
   const timestamp = (): string | undefined =>
     options.clock ? new Date(options.clock()).toISOString() : undefined;
 
@@ -163,7 +200,26 @@ export function createGovernedToolkit(
     ): GovernedToolkit =>
       build(typeof context === "function" ? context : () => context);
 
-    return { defineGovernedTool, withContext };
+    const tool = <S extends StandardSchemaV1, TResult = unknown>(
+      spec: GovernedFlueToolSpec<S, TResult>,
+    ): FlueToolDefinition => {
+      if (!defineToolFn) {
+        throw new GovernanceConfigError(
+          spec.name,
+          "toolkit.tool() needs Flue's defineTool. Pass `defineTool` to " +
+            "createGovernedToolkit, or use defineGovernedTool + toFlueTool.",
+        );
+      }
+      return defineToolFn(
+        toFlueTool(
+          defineGovernedTool(
+            spec as unknown as GovernedToolSpec<InferArgs<S>, TResult>,
+          ),
+        ),
+      );
+    };
+
+    return { defineGovernedTool, withContext, tool };
 
     function defineGovernedTool<TArgs, TResult>(
       spec: GovernedToolSpec<TArgs, TResult>,
@@ -374,8 +430,8 @@ export function createGovernedToolkit(
 
       // 7. Idempotency (only when declared and a store is configured).
       const key = spec.idempotency?.key(args, ctx);
-      if (key && options.idempotencyStore) {
-        const store = options.idempotencyStore;
+      if (key) {
+        const store = idempotencyStore;
         const begin = await store.begin(
           ctx.tenantId,
           key,
@@ -453,5 +509,9 @@ export function createGovernedToolkit(
     }
   };
 
-  return build(options.context);
+  const resolver: ContextResolver =
+    typeof options.context === "function"
+      ? options.context
+      : options.context.resolver();
+  return build(resolver);
 }

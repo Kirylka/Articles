@@ -52,6 +52,26 @@ export type FnValidator<T> = (input: unknown) => T;
  */
 export type ArgValidator<T> = ParseValidator<T> | FnValidator<T> | object;
 
+/**
+ * Minimal [Standard Schema](https://standardschema.dev) typing. Used to infer a
+ * tool's argument type from its `parameters` schema, so handlers/policies don't
+ * restate it. Works with any compliant library (Valibot 1.0, Zod 3.24+,
+ * ArkType) without importing one — so the package stays dependency-free.
+ */
+export interface StandardSchemaV1<Output = unknown> {
+  readonly "~standard": {
+    readonly version: number;
+    readonly vendor: string;
+    readonly validate: (value: unknown) => unknown;
+    readonly types?: { readonly output: Output };
+  };
+}
+
+/** The parsed output type of a Standard Schema. */
+export type InferArgs<S extends StandardSchemaV1> = NonNullable<
+  S["~standard"]["types"]
+>["output"];
+
 /** The context handed to a governed tool's `execute` handler. */
 export interface ExecutionContext extends TrustedContext {
   /** The resource scopes this specific call was authorized against. */

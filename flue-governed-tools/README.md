@@ -88,46 +88,36 @@ capture, so it lives in `authorize`:
 ```ts
 import { createAgent, defineTool } from "@flue/runtime";
 import * as v from "valibot";
-import {
-  createGovernedToolkit,
-  ContextStore,
-  HashChainAuditLog,
-  InMemoryIdempotencyStore,
-  toFlueTool,
-} from "flue-governed-tools";
+import { createGovernedToolkit, ContextStore, HashChainAuditLog } from "flue-governed-tools";
 
 // You set who the caller is, from your own auth — not the model, ever.
 const ctx = new ContextStore();
 
 const toolkit = createGovernedToolkit({
-  context: ctx.resolver(),
+  context: ctx,                                       // pass the store directly
   audit: new HashChainAuditLog({ path: "audit.jsonl" }),
-  idempotencyStore: new InMemoryIdempotencyStore(),
+  defineTool,                                         // inject Flue's defineTool once
+});                                                   // idempotency store defaults to in-memory
+
+const resetPassword = toolkit.tool({                  // one call → a Flue ToolDefinition
+  name: "reset_password",
+  description: "Send a password reset link for an account.",
+  parameters: v.object({ accountId: v.string() }),
+  sideEffect: true,
+
+  // The check HTS never made: does this caller actually control the account
+  // they're asking about? `a` is inferred from `parameters` — no generic to
+  // restate. Runs before any link is sent; a false answer logs the refusal.
+  authorize: (a, gctx) => accounts.isControlledBy(a.accountId, gctx.actor.id),
+
+  // A retry won't send a second reset link.
+  idempotency: { key: (a) => `reset:${a.accountId}` },
+
+  execute: async (a) => {
+    await accounts.sendResetLink(a.accountId);
+    return `Sent a reset link for ${a.accountId}.`;
+  },
 });
-
-const resetPassword = defineTool(
-  toFlueTool(
-    toolkit.defineGovernedTool<{ accountId: string }>({
-      name: "reset_password",
-      description: "Send a password reset link for an account.",
-      parameters: v.object({ accountId: v.string() }),
-      sideEffect: true,
-
-      // The check HTS never made: does this caller actually control the
-      // account they're asking about? Runs before any link is sent; a false
-      // answer stops the call and logs the refusal.
-      authorize: (a, gctx) => accounts.isControlledBy(a.accountId, gctx.actor.id),
-
-      // A retry won't send a second reset link.
-      idempotency: { key: (a) => `reset:${a.accountId}` },
-
-      execute: async (a) => {
-        await accounts.sendResetLink(a.accountId);
-        return `Sent a reset link for ${a.accountId}.`;
-      },
-    }),
-  ),
-);
 
 const agent = createAgent(() => ({ model, tools: [resetPassword] }));
 ```
@@ -187,13 +177,7 @@ const agent = createAgent((ctx) => {
 
   return {
     model,
-    tools: [
-      defineTool(
-        toFlueTool(
-          bound.defineGovernedTool({ name: "reset_password", /* … */ }),
-        ),
-      ),
-    ],
+    tools: [bound.tool({ name: "reset_password", /* … */ })],
   };
 });
 ```
@@ -339,7 +323,7 @@ side effect never runs, and the refusal surfaces to the model as a tool error).
 
 ## Is this real yet
 
-It's pre-release, and honest about it. The governance behavior is covered by 78
+It's pre-release, and honest about it. The governance behavior is covered by 80
 unit and end-to-end tests, including on-disk tamper detection, the Web Crypto
 edge path with D1/KV adapters, and tests that run
 a governed tool through the actual `@flue/runtime` `defineTool` and valibot

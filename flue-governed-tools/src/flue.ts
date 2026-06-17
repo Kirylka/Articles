@@ -82,7 +82,10 @@ export interface FlueToolDefinition {
   name: string;
   description: string;
   parameters: object;
-  execute: (args: unknown, signal?: AbortSignal) => Promise<string>;
+  // The dynamically-parsed model arguments. Typed as a record (not `unknown`)
+  // so this structural shape stays assignable in both directions to Flue's
+  // generic `defineTool`/`ToolDefinition`.
+  execute: (args: Record<string, unknown>, signal?: AbortSignal) => Promise<string>;
 }
 
 /**

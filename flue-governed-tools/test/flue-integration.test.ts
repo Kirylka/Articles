@@ -18,7 +18,7 @@ import {
   createGovernedToolkit,
   toFlueTool,
 } from "../src/index.js";
-import { ScopeViolationError } from "../src/errors.js";
+import { GovernanceConfigError, ScopeViolationError } from "../src/errors.js";
 import type { TrustedContext } from "../src/types.js";
 
 interface RefundArgs {
@@ -130,4 +130,45 @@ test("duplicate refund replays through the real tool; side effect runs once", as
   const entries = await app.audit.entries();
   assert.equal(entries.at(-1)!.outcome, "replayed");
   assert.deepEqual(app.audit.verify(), { valid: true });
+});
+
+test("toolkit.tool() one-call helper infers args and returns a Flue tool", async () => {
+  const ctx = new ContextStore();
+  const audit = new InMemoryAuditLog();
+  // defineTool injected -> the one-call ergonomic path is available.
+  const toolkit = createGovernedToolkit({ context: ctx, audit, defineTool });
+
+  const refund = toolkit.tool({
+    name: "issue_refund",
+    description: "Issue a refund to a customer.",
+    parameters: v.object({ customerId: v.string(), amount: v.number() }),
+    sideEffect: true,
+    // `a` is inferred as { customerId: string; amount: number } — no generic.
+    scope: (a) => `customer:${a.customerId}`,
+    execute: (a, c) => `refunded ${a.amount} to ${a.customerId} for ${c.tenantId}`,
+  });
+
+  assert.equal(refund.name, "issue_refund");
+  const out = await ctx.run(
+    { actor: { id: "u", roles: [] }, tenantId: "acme", scopes: ["customer:c-1"] },
+    () => refund.execute({ customerId: "c-1", amount: 40 }),
+  );
+  assert.equal(out, "refunded 40 to c-1 for acme");
+});
+
+test("toolkit.tool() throws if defineTool wasn't provided", () => {
+  const toolkit = createGovernedToolkit({
+    context: new ContextStore(),
+    audit: new InMemoryAuditLog(),
+  });
+  assert.throws(
+    () =>
+      toolkit.tool({
+        name: "x",
+        description: "x",
+        parameters: v.object({ a: v.string() }),
+        execute: () => "ok",
+      }),
+    GovernanceConfigError,
+  );
 });
