@@ -28,6 +28,7 @@ requirement(s) it satisfies (BR-1 … BR-7).
 | **FR-2.3** | If a governed tool is invoked with no resolvable trusted context, the call MUST be denied (fail-closed) and recorded. | BR-1, BR-3 |
 | **FR-2.4** | The `execute` handler MUST receive the trusted context (incl. the scopes it was authorized against) so it can make tenant-bound calls to downstream systems. | BR-1 |
 | **FR-2.5** | The library MUST support binding the trusted context **per invocation** (not only via ambient `AsyncLocalStorage`), for hosts that run tools detached from the caller (e.g. Flue's dispatched/addressable-agent path). `toolkit.withContext(value \| resolver)` MUST return a toolkit that resolves context from the bound value while sharing audit/idempotency/adapters. | BR-1 |
+| **FR-2.6** (ergonomics) | The toolkit SHOULD minimize setup: own a built-in `ContextStore` exposed via `toolkit.run/current/peek` when no `context` is supplied; accept `audit` as a file-path string (wrapped in a hash-chained log); and treat `scopes` as optional. None of these weaken a guarantee — they remove ceremony from the common path. | BR-1, C-12 |
 
 ### 1.3 Scope / tenant enforcement
 

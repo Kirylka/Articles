@@ -28,8 +28,8 @@ import type {
   StandardSchemaV1,
   TrustedContext,
 } from "./types.js";
-import type { ContextResolver, ContextStore } from "./context.js";
-import type { AuditLog, AuditInput } from "./audit.js";
+import { ContextStore, type ContextResolver } from "./context.js";
+import { HashChainAuditLog, type AuditLog, type AuditInput } from "./audit.js";
 import { InMemoryIdempotencyStore, type IdempotencyStore } from "./idempotency.js";
 import { defaultRbac, type RbacAdapter } from "./rbac.js";
 import {
@@ -188,12 +188,14 @@ export type FlueDefineTool = (tool: FlueToolDefinition) => FlueToolDefinition;
 
 export interface GovernedToolkitOptions {
   /**
-   * Trusted-context source (never model output). Pass a {@link ContextStore}
-   * directly, or a resolver function.
+   * Trusted-context source (never model output). Omit it to use the toolkit's
+   * built-in {@link ContextStore} via `toolkit.run(...)` (the common case);
+   * pass your own `ContextStore` to share one; or pass a resolver function for
+   * a custom binding (then `toolkit.run` is unavailable — you bind it yourself).
    */
-  context: ContextStore | ContextResolver;
-  /** Audit sink. */
-  audit: AuditLog;
+  context?: ContextStore | ContextResolver;
+  /** Audit sink — an {@link AuditLog}, or a file path string (hash-chained JSONL). */
+  audit: AuditLog | string;
   /** Idempotency store. Defaults to a process-local in-memory store. */
   idempotencyStore?: IdempotencyStore;
   /**
@@ -240,6 +242,17 @@ export interface GovernedToolkit {
   tool<S extends StandardSchemaV1, TResult = unknown>(
     spec: GovernedFlueToolSpec<S, TResult>,
   ): FlueToolDefinition;
+  /**
+   * Bind the trusted context for `fn` (and every governed tool it triggers)
+   * using the toolkit's built-in `ContextStore`. The edge-boundary call:
+   * `await toolkit.run(trustedContext, () => harness.prompt(text))`. Unavailable
+   * if you constructed the toolkit with a custom resolver function.
+   */
+  run<T>(context: TrustedContext, fn: () => T): T;
+  /** The current trusted context, or throw if not inside `run(...)`. */
+  current(): TrustedContext;
+  /** The current trusted context, or `undefined` if not inside `run(...)`. */
+  peek(): TrustedContext | undefined;
 }
 
 function makeValidator<T>(v?: ArgValidator<T>): (input: unknown) => T {
@@ -280,8 +293,32 @@ export function createGovernedToolkit(
   const idempotencyStore =
     options.idempotencyStore ?? new InMemoryIdempotencyStore();
   const defineToolFn = options.defineTool;
+  const auditLog: AuditLog =
+    typeof options.audit === "string"
+      ? new HashChainAuditLog({ path: options.audit })
+      : options.audit;
   const timestamp = (): string | undefined =>
     options.clock ? new Date(options.clock()).toISOString() : undefined;
+
+  // The toolkit owns a ContextStore unless you pass your own (or a resolver).
+  const store: ContextStore | undefined =
+    options.context instanceof ContextStore
+      ? options.context
+      : options.context === undefined
+        ? new ContextStore()
+        : undefined; // a custom resolver function — no store to drive run()
+  const rootResolver: ContextResolver =
+    typeof options.context === "function" ? options.context : store!.resolver();
+  const requireStore = (): ContextStore => {
+    if (!store) {
+      throw new GovernanceConfigError(
+        "toolkit",
+        "toolkit.run/current/peek need a ContextStore. Omit `context` to use " +
+          "the built-in one, or pass a ContextStore — not a resolver function.",
+      );
+    }
+    return store;
+  };
 
   // Build a toolkit bound to a specific context resolver; `withContext` derives
   // siblings that share everything else but resolve the context differently.
@@ -310,7 +347,15 @@ export function createGovernedToolkit(
       );
     };
 
-    return { defineGovernedTool, withContext, tool };
+    return {
+      defineGovernedTool,
+      withContext,
+      tool,
+      run: <T>(context: TrustedContext, fn: () => T) =>
+        requireStore().run(context, fn),
+      current: () => requireStore().current(),
+      peek: () => requireStore().peek(),
+    };
 
     function defineGovernedTool<TArgs, TResult>(
       spec: GovernedToolSpec<TArgs, TResult>,
@@ -368,7 +413,7 @@ export function createGovernedToolkit(
     const validate = makeValidator(spec.parameters);
     const redactor = spec.redact ?? baseRedactor;
     const audit = (input: AuditInput) =>
-      options.audit.append({ ...input, ts: input.ts ?? timestamp() });
+      auditLog.append({ ...input, ts: input.ts ?? timestamp() });
 
     const execute = async (
       rawArgs: unknown,
@@ -446,10 +491,11 @@ export function createGovernedToolkit(
       }
 
       // 4. Scope / tenant isolation.
-      const denied = deniedScopes(requested, ctx.scopes);
+      const allowedScopes = ctx.scopes ?? [];
+      const denied = deniedScopes(requested, allowedScopes);
       if (denied.length > 0) {
         await denyAudit("scope_violation");
-        throw new ScopeViolationError(spec.name, denied, ctx.scopes);
+        throw new ScopeViolationError(spec.name, denied, allowedScopes);
       }
 
       // 5. Authorization, keyed to a declared trusted anchor.
@@ -643,9 +689,5 @@ export function createGovernedToolkit(
     }
   };
 
-  const resolver: ContextResolver =
-    typeof options.context === "function"
-      ? options.context
-      : options.context.resolver();
-  return build(resolver);
+  return build(rootResolver);
 }

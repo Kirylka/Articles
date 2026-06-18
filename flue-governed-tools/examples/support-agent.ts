@@ -13,10 +13,8 @@
  */
 
 import {
-  ContextStore,
   GovernanceConfigError,
   InMemoryAuditLog,
-  InMemoryIdempotencyStore,
   createGovernedToolkit,
   caller,
   type ApprovalAdapter,
@@ -47,7 +45,6 @@ const billing = {
 };
 
 // --- Wiring -----------------------------------------------------------------
-const contextStore = new ContextStore();
 const audit = new InMemoryAuditLog();
 
 const approvals: ApprovalAdapter = {
@@ -60,9 +57,7 @@ const approvals: ApprovalAdapter = {
 };
 
 const toolkit = createGovernedToolkit({
-  context: contextStore.resolver(),
-  audit,
-  idempotencyStore: new InMemoryIdempotencyStore(),
+  audit,                 // built-in context store + in-memory idempotency by default
   approval: approvals,
 });
 
@@ -136,7 +131,7 @@ const principal: TrustedContext = {
 
 async function tryCall(label: string, name: string, args: unknown) {
   try {
-    const result = await contextStore.run(principal, () => agent.call(name, args));
+    const result = await toolkit.run(principal, () => agent.call(name, args));
     console.log(`✅ ${label}: ${JSON.stringify(result)}`);
   } catch (err) {
     console.log(

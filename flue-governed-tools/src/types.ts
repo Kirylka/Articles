@@ -23,8 +23,10 @@ export interface TrustedContext {
   /**
    * Resource scopes the actor is permitted to touch, e.g.
    * `["customer:c-123", "ticket:*"]`. A `*` matches any run of characters.
+   * Optional — omit (or `[]`) for tools that gate with `authorize` instead of
+   * `scope`.
    */
-  scopes: string[];
+  scopes?: string[];
   /** Correlation id for the surrounding request/run. */
   requestId?: string;
   /** Free-form attributes available to tool handlers and adapters. */

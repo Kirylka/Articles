@@ -88,18 +88,14 @@ capture, so it lives in `authorize`:
 ```ts
 import { createAgent, defineTool } from "@flue/runtime";
 import * as v from "valibot";
-import { createGovernedToolkit, ContextStore, HashChainAuditLog, caller } from "flue-governed-tools";
+import { createGovernedToolkit, caller } from "flue-governed-tools";
 
-// You set who the caller is, from your own auth — not the model, ever.
-const ctx = new ContextStore();
+const gov = createGovernedToolkit({
+  audit: "audit.jsonl",   // a path → hash-chained JSONL (or pass your own AuditLog)
+  defineTool,             // inject Flue's defineTool once
+});                       // built-in context store + in-memory idempotency by default
 
-const toolkit = createGovernedToolkit({
-  context: ctx,                                       // pass the store directly
-  audit: new HashChainAuditLog({ path: "audit.jsonl" }),
-  defineTool,                                         // inject Flue's defineTool once
-});                                                   // idempotency store defaults to in-memory
-
-const resetPassword = toolkit.tool({                  // one call → a Flue ToolDefinition
+const resetPassword = gov.tool({                      // one call → a Flue ToolDefinition
   name: "reset_password",
   description: "Send a password reset link for an account.",
   parameters: v.object({ accountId: v.string() }),
@@ -124,13 +120,13 @@ const agent = createAgent(() => ({ model, tools: [resetPassword] }));
 ```
 
 The caller's identity comes from your own auth, never the model. You set it once
-for the conversation, reading it off `FlueContext`'s request:
+for the conversation with `gov.run` (reading actor/tenant off `FlueContext`'s
+request). No `scopes` here — this tool gates with `authorize`; add them only for
+tools that use `scope`.
 
 ```ts
-await ctx.run(
-  // No `scopes` needed here — this tool gates with `authorize`, not a scope
-  // list. Add scopes when a tool uses `scope` (see "What runs on every call").
-  { actor: { id: "user-7", roles: ["account_holder"] }, tenantId: "app", scopes: [] },
+await gov.run(
+  { actor: { id: "user-7", roles: ["account_holder"] }, tenantId: "app" },
   () => harness.prompt("I'm locked out, can you reset my password?"),
 );
 ```
