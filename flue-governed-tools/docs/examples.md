@@ -38,9 +38,10 @@ the exact `seq` that breaks — the guarantee, demonstrated rather than asserted
 
 ## Is this real yet
 
-It's pre-release, and honest about it. The governance behavior is covered by 127
-unit and end-to-end tests, including on-disk tamper detection, the Web Crypto
-edge path with D1/KV adapters, a regression suite pinning the fixes from several
+It's pre-release, and honest about it. The governance behavior is covered by an
+extensive suite of unit and end-to-end tests, including on-disk tamper
+detection, the Web Crypto edge path with D1/KV adapters, a regression suite
+pinning the fixes from several
 rounds of security review (gate bypasses, concurrent-append chain corruption,
 cross-tool idempotency collisions and delimiter ambiguity, empty idempotency/HMAC
 keys, in-flight TTL expiry, stale/concurrent idempotency claims, duplicate side
