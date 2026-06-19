@@ -56,36 +56,33 @@ The pieces stack. Identity is established once, up top, by something that alread
 knows who the human is; it flows down into the trusted context, and every tool
 call is decided against it.
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│  Identity provider · Okta / Entra / Anthropic Enterprise-Managed Auth  │
-│  verifies the human, issues groups + brokered credentials              │
-└────────────────────────────────┬───────────────────────────────────────┘
-                                  │  verified identity + groups
-                                  ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│  Your authenticated request · the Flue harness                         │
-│  maps IdP identity → TrustedContext, binds it for the turn             │
-│  gov.run({ actor, tenantId }, …)   ·   gov.withContext(trusted)        │
-└────────────────────────────────┬───────────────────────────────────────┘
-                                  │  TrustedContext (out of the model's reach)
-                                  ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│  Governed tool · this library                                          │
-│  validate → RBAC → scope → authorize → approval → idempotency → exec   │
-│       model supplies the args  ──────►  context decides who may act     │
-└────────────────────────────────┬───────────────────────────────────────┘
-                                  │  every decision, hash-chained
-                                  ▼
-┌──────────────────────────────────────────────────────────────────────┐
-│  Tamper-evident audit · hash-chained JSONL / D1 / your own sink        │
-└──────────────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart TB
+  idp["🔐 <b>Identity provider</b><br/>Okta · Entra · Anthropic Enterprise-Managed Auth<br/><i>verifies the human, brokers credentials</i>"]
+  harness["🧩 <b>Your request · the Flue harness</b><br/>maps identity → TrustedContext, binds it for the turn<br/>gov.run(...) · gov.withContext(...)"]
+  model(["🤖 Model"])
+  gov["🛡️ <b>Governed tool — this library</b><br/>validate → RBAC → scope → authorize → approval → idempotency → execute"]
+  audit["🧾 <b>Tamper-evident audit</b><br/>hash-chained JSONL · D1 · your own sink"]
+  sub["☁️ <b>Substrate</b> — Cloudflare · Vercel · your cloud<br/><i>egress allowlists · credential brokering · sandbox isolation</i>"]
 
-   underneath it all — the substrate (Cloudflare / Vercel / your cloud):
-   egress allowlists, credential brokering, sandbox isolation. That's what
-   actually contains a "primitive" tool; this library attests to it and
-   flags it (see below), but doesn't enforce it.
+  idp -->|"verified identity + groups"| harness
+  harness -->|"TrustedContext — the model can't read or set it"| gov
+  model -->|"arguments (untrusted)"| gov
+  gov -->|"every decision, hash-chained"| audit
+  sub -.->|"contains primitive tools — attested here, enforced below"| gov
+
+  classDef ours fill:#dcfce7,stroke:#16a34a,color:#052e16;
+  classDef ext fill:#f1f5f9,stroke:#94a3b8,color:#0f172a;
+  class gov,audit ours;
+  class idp,harness,model,sub ext;
 ```
+
+The two green boxes are what this library owns: the per-call decision and the
+record of it. Everything around them — the identity above, the substrate
+below — is the platform's job. Notably, the **substrate** is what actually
+*contains* a "primitive" tool (egress allowlists, credential brokering,
+isolation); this library attests to that containment and flags it (see below),
+but doesn't enforce it.
 
 **Identity comes from the harness, never the model.** The top box is not part of
 this library, and that's the point. Whatever already authenticates your
@@ -118,6 +115,30 @@ authorization and the audit this library adds on top of the identity the harness
 already established — the part the IdP can't see and the model shouldn't decide.
 
 ## The fix is a wrapper
+
+The same tool, before and after — the only thing that changes is that the
+ownership check now *exists* and runs before the side effect:
+
+```mermaid
+flowchart TB
+  subgraph before["❌ Plain Flue tool — the High Touch Support bug"]
+    direction LR
+    A1["caller asks:<br/>reset <b>celebrity-account</b>"] --> A2["reset_password"]
+    A2 --> A3[("sendResetLink")]
+    A3 --> A4["🔓 account taken over"]
+  end
+  subgraph after["✅ Same tool, governed"]
+    direction LR
+    B1["caller asks:<br/>reset <b>celebrity-account</b>"] --> B2{"authorize:<br/>does the caller<br/>control this account?"}
+    B2 -- "no" --> B3["⛔ refused before any link<br/>+ written to the audit log"]
+    B2 -- "yes" --> B4[("sendResetLink")]
+  end
+
+  classDef bad fill:#fee2e2,stroke:#ef4444,color:#450a0a;
+  classDef ok fill:#dcfce7,stroke:#16a34a,color:#052e16;
+  class A1,A2,A3,A4 bad;
+  class B1,B2,B3,B4 ok;
+```
 
 Here's a support tool on plain Flue. It resets a password:
 
@@ -455,6 +476,13 @@ npm run spike
 It dispatches two turns: the model resets the caller's own account (executes
 once, audited), then is talked into resetting someone else's (denied live, the
 side effect never runs, and the refusal surfaces to the model as a tool error).
+
+And to *see* "tamper-evident" mean something, open
+[`examples/audit-viewer.html`](./examples/audit-viewer.html) in any browser — no
+build, no server. Load an `audit.jsonl` (or click **Load sample**), and it
+re-verifies the hash chain locally with Web Crypto, the same algorithm the
+library writes with. Hit **Tamper with a line** and watch verification point at
+the exact `seq` that breaks — the guarantee, demonstrated rather than asserted.
 
 ## Is this real yet
 
