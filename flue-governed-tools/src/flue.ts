@@ -4,7 +4,7 @@
  * This is the ONLY module aware of how Flue calls a tool; the governance core
  * has no Flue dependency.
  *
- * Verified against `@flue/runtime` v1.0.0-beta.1. Flue's tool contract
+ * Verified against the `@flue/runtime` 1.0.0 beta line. Flue's tool contract
  * (`ToolDefinition`) is:
  *
  * ```ts

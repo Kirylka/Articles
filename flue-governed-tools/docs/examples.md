@@ -62,8 +62,9 @@ tarball into a clean project with only its peer deps and both type-checks and
 runs a consumer against the published `exports` map. It has also been run end to end through a real Flue
 dispatched agent turn (`npm run spike`) — proving the per-invocation binding and
 enforcement work on Flue's detached execution path, and that a denied call comes
-back to the model as a tool error. Flue's own API is still in beta (`@flue/runtime`
-1.0.0-beta.1), so expect some churn there.
+back to the model as a tool error. Flue's own API is still in beta, so expect
+some churn there; the spike runs against the latest published `@flue/runtime` in
+CI so we catch breaking changes early.
 
 If you want the reasoning instead of just the code:
 
