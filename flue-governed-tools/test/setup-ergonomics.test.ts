@@ -50,7 +50,7 @@ test("minimal setup: audit path string + built-in store + optional scopes", asyn
 
     // The string audit was wired into a hash-chained file log.
     const log = new HashChainAuditLog({ path });
-    assert.deepEqual(log.verify(), { valid: true });
+    assert.deepEqual(await log.verify(), { valid: true });
     assert.ok((await log.entries()).length >= 1);
   } finally {
     rmSync(path, { force: true });

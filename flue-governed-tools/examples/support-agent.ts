@@ -189,7 +189,7 @@ async function main() {
     );
   }
 
-  const v = audit.verify();
+  const v = await audit.verify();
   console.log(
     `\nAudit chain: ${v.valid ? "VALID ✅" : `BROKEN at ${v.brokenAt} ❌`}`,
   );

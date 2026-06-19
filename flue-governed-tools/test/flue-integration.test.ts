@@ -129,7 +129,7 @@ test("duplicate refund replays through the real tool; side effect runs once", as
 
   const entries = await app.audit.entries();
   assert.equal(entries.at(-1)!.outcome, "replayed");
-  assert.deepEqual(app.audit.verify(), { valid: true });
+  assert.deepEqual(await app.audit.verify(), { valid: true });
 });
 
 test("toolkit.tool() one-call helper infers args and returns a Flue tool", async () => {

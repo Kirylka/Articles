@@ -1,8 +1,8 @@
 /**
  * Reference adapters for running flue-governed-tools on Cloudflare Workers (or
  * any edge runtime): a D1-backed audit log and a KV-backed idempotency store.
- * They use the Web Crypto hashing path (`hashEntryAsync`/`verifyChainAsync`),
- * so they work where `node:crypto` and the filesystem are unavailable.
+ * Hashing is Web Crypto (the only path), so they work where `node:crypto` and
+ * the filesystem are unavailable.
  *
  * These are intentionally written against the *minimal* structural slices of
  * the Cloudflare APIs they use, so they're easy to read, copy, and test with a
@@ -10,8 +10,8 @@
  */
 
 import {
-  hashEntryAsync,
-  verifyChainAsync,
+  hashEntry,
+  verifyChain,
   GENESIS_HASH,
   type AuditEntry,
   type AuditEntryBody,
@@ -71,7 +71,7 @@ export class D1AuditLog implements AuditLog {
       prevHash: head ? head.hash : GENESIS_HASH,
       ts: input.ts ?? new Date().toISOString(),
     };
-    const entry: AuditEntry = { ...body, hash: await hashEntryAsync(body, this.hmacKey) };
+    const entry: AuditEntry = { ...body, hash: await hashEntry(body, this.hmacKey) };
 
     await this.db
       .prepare("INSERT INTO audit (seq, hash, entry) VALUES (?, ?, ?)")
@@ -88,7 +88,7 @@ export class D1AuditLog implements AuditLog {
   }
 
   async verify() {
-    return verifyChainAsync(await this.entries(), this.hmacKey);
+    return verifyChain(await this.entries(), this.hmacKey);
   }
 }
 

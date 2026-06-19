@@ -8,9 +8,7 @@ import assert from "node:assert/strict";
 import {
   InMemoryAuditLog,
   hashEntry,
-  hashEntryAsync,
   verifyChain,
-  verifyChainAsync,
   GENESIS_HASH,
   type AuditEntry,
   type AuditEntryBody,
@@ -35,35 +33,29 @@ const body = (seq: number, prevHash: string): AuditEntryBody => ({
   requestedScopes: ["account:a1"],
 });
 
-test("Web Crypto hashing is byte-identical to node:crypto (SHA-256 and HMAC)", async () => {
+test("Web Crypto hashing is deterministic; HMAC diverges by key", async () => {
   const b = body(0, GENESIS_HASH);
-  assert.equal(await hashEntryAsync(b), hashEntry(b));
-  assert.equal(await hashEntryAsync(b, "secret-key"), hashEntry(b, "secret-key"));
-  // Different keys must diverge.
-  assert.notEqual(await hashEntryAsync(b, "k1"), await hashEntryAsync(b, "k2"));
+  // SHA-256 hex is 64 chars and stable across calls.
+  const h = await hashEntry(b);
+  assert.match(h, /^[0-9a-f]{64}$/);
+  assert.equal(await hashEntry(b), h);
+  // Keyed (HMAC) differs from unkeyed, and different keys diverge.
+  assert.notEqual(await hashEntry(b, "secret-key"), h);
+  assert.notEqual(await hashEntry(b, "k1"), await hashEntry(b, "k2"));
 });
 
-test("verifyChainAsync validates a chain written by the sync node log", async () => {
-  const log = new InMemoryAuditLog();
-  await log.append(body(0, GENESIS_HASH));
-  await log.append(body(1, GENESIS_HASH)); // prevHash filled in by the log
-  const entries = await log.entries();
-  assert.deepEqual(await verifyChainAsync(entries), { valid: true });
-});
-
-test("verifyChainAsync detects tampering and matches sync verifyChain", async () => {
+test("verifyChain validates a chain and detects tampering", async () => {
   const log = new InMemoryAuditLog();
   await log.append(body(0, GENESIS_HASH));
   await log.append(body(1, GENESIS_HASH));
   await log.append(body(2, GENESIS_HASH));
   const entries = await log.entries();
-  (entries[1] as AuditEntry).actorId = "intruder";
+  assert.deepEqual(await verifyChain(entries), { valid: true });
 
-  const sync = verifyChain(entries);
-  const async = await verifyChainAsync(entries);
-  assert.equal(async.valid, false);
-  assert.equal(async.brokenAt, 1);
-  assert.deepEqual(async, sync);
+  (entries[1] as AuditEntry).actorId = "intruder";
+  const result = await verifyChain(entries);
+  assert.equal(result.valid, false);
+  assert.equal(result.brokenAt, 1);
 });
 
 // --- a tiny in-memory fake D1 ------------------------------------------------

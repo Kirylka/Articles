@@ -156,7 +156,7 @@ test("e2e: a full run enforces authorize, scope, idempotency and audit", async (
     );
     assert.equal(entries[2]!.error, "authorization_denied");
     assert.equal(entries[6]!.error, "scope_violation");
-    assert.deepEqual(app.audit.verify(), { valid: true });
+    assert.deepEqual(await app.audit.verify(), { valid: true });
   } finally {
     rmSync(path, { force: true });
   }
@@ -193,7 +193,7 @@ test("e2e: tampering with the persisted audit file is detected", async () => {
         refundId: "r-1",
       });
     });
-    assert.deepEqual(app.audit.verify(), { valid: true });
+    assert.deepEqual(await app.audit.verify(), { valid: true });
 
     // Attacker edits the refund record on disk.
     const lines = readFileSync(path, "utf8").trim().split("\n");
@@ -209,7 +209,7 @@ test("e2e: tampering with the persisted audit file is detected", async () => {
       .split("\n")
       .map((l) => JSON.parse(l) as AuditEntry);
     const firstRefundIdx = entries.findIndex((e) => e.tool === "issue_refund");
-    const result = verifyChain(entries);
+    const result = await verifyChain(entries);
     assert.equal(result.valid, false);
     assert.equal(result.brokenAt, firstRefundIdx);
   } finally {

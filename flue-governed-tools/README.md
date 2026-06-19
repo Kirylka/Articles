@@ -289,23 +289,27 @@ import { redactString } from "@redactpii/node";
 createGovernedToolkit({ redaction: textRedactor((s) => redactString(s)), /* … */ });
 ```
 
-## Running on the edge (Cloudflare Workers, Vercel)
+## Runs wherever Flue runs
 
-The core is runtime-agnostic, but two defaults are Node-only: `HashChainAuditLog`
-uses the filesystem, and hashing uses `node:crypto`. For edge runtimes:
+No per-runtime matrix to learn. The governance semantics are byte-identical on
+Node, Cloudflare Workers, Deno, Bun, Lambda, and edge — hashing is Web Crypto
+(the one path everywhere), and context propagation is a *pattern* choice
+(`gov.run` where your code drives the prompt, `gov.withContext` where Flue
+dispatches it), not a deployment-target choice.
 
-- Hashing has a **Web Crypto** path — `hashEntryAsync` / `verifyChainAsync` —
-  that produces byte-identical chains to the Node one, so it works where only
-  `crypto.subtle` exists. (`ContextStore` relies on `AsyncLocalStorage`, which
-  Cloudflare Workers supports under `nodejs_compat`; on the dispatched path use
-  `withContext` regardless.)
-- Use durable, edge-native stores instead of the in-memory/file defaults.
-  [`examples/cloudflare-adapters.ts`](./examples/cloudflare-adapters.ts) has
-  copy-pasteable reference adapters: a **D1**-backed `AuditLog` (hash-chained via
-  Web Crypto) and a **KV**-backed `IdempotencyStore`, both written against
-  minimal interfaces and covered by tests. For strict at-most-once under
-  concurrency, back the idempotency store with a **Durable Object** (the example
-  notes where KV's eventual consistency is a limitation).
+The only thing that varies is **where your records persist** — which is your
+storage decision, the same one you'd make for any database, not a runtime
+lookup. Take the file default for local/Node, or hand the toolkit a store:
+
+```ts
+createGovernedToolkit({ audit: myAuditLog, idempotencyStore: myStore, defineTool });
+```
+
+[`examples/cloudflare-adapters.ts`](./examples/cloudflare-adapters.ts) has
+copy-pasteable reference stores for Workers — a **D1**-backed `AuditLog` and a
+**KV**-backed `IdempotencyStore` (use a **Durable Object** for strict
+at-most-once under concurrency). On a runtime without a filesystem you simply
+pass a store instead of a path; nothing else changes.
 
 ## Human-in-the-loop approval
 

@@ -11,7 +11,6 @@
  */
 
 import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
-import { createHash, createHmac } from "node:crypto";
 import { dirname } from "node:path";
 import type { Decision, Outcome } from "./types.js";
 
@@ -60,20 +59,7 @@ function canonicalize(value: unknown): unknown {
   return value;
 }
 
-/**
- * Compute the chain hash for an entry body. When `hmacKey` is provided the hash
- * is an HMAC-SHA256 keyed with it, which additionally defends against an
- * attacker who can rewrite the entire file from genesis (they cannot forge a
- * valid chain without the key). Without a key it is a plain SHA-256.
- */
-export function hashEntry(body: AuditEntryBody, hmacKey?: string): string {
-  const json = JSON.stringify(canonicalize(body));
-  const hasher = hmacKey
-    ? createHmac("sha256", hmacKey)
-    : createHash("sha256");
-  return hasher.update(json).digest("hex");
-}
-
+/** Hex-encode an ArrayBuffer. */
 function toHex(buffer: ArrayBuffer): string {
   return Array.from(new Uint8Array(buffer), (b) =>
     b.toString(16).padStart(2, "0"),
@@ -81,17 +67,17 @@ function toHex(buffer: ArrayBuffer): string {
 }
 
 /**
- * Web Crypto (SubtleCrypto) variant of {@link hashEntry}, for runtimes that
- * expose `crypto.subtle` but not `node:crypto` — e.g. Cloudflare Workers and
- * other edge runtimes. Produces byte-identical hashes to {@link hashEntry}, so
- * the two are interchangeable on the same chain.
+ * Compute the chain hash for an entry body, using Web Crypto (`crypto.subtle`)
+ * so the exact same code runs on every Flue target — Node, Cloudflare Workers,
+ * Deno, Bun, Lambda, edge. With `hmacKey` it is HMAC-SHA256 (which also defends
+ * against a full-file rewrite, since the chain can't be forged without the
+ * key); without one, plain SHA-256.
  */
-export async function hashEntryAsync(
+export async function hashEntry(
   body: AuditEntryBody,
   hmacKey?: string,
 ): Promise<string> {
-  const json = JSON.stringify(canonicalize(body));
-  const data = new TextEncoder().encode(json);
+  const data = new TextEncoder().encode(JSON.stringify(canonicalize(body)));
   const subtle = globalThis.crypto.subtle;
   if (hmacKey) {
     const key = await subtle.importKey(
@@ -122,34 +108,7 @@ export interface AuditLog {
  * Walk a chain and report the first inconsistency, if any. Pass the same
  * `hmacKey` the log was written with (if any) or verification will fail.
  */
-export function verifyChain(
-  entries: AuditEntry[],
-  hmacKey?: string,
-): {
-  valid: boolean;
-  brokenAt?: number;
-  reason?: string;
-} {
-  let prevHash = GENESIS_HASH;
-  for (let i = 0; i < entries.length; i++) {
-    const entry = entries[i]!;
-    if (entry.seq !== i) {
-      return { valid: false, brokenAt: i, reason: `seq mismatch at index ${i}` };
-    }
-    if (entry.prevHash !== prevHash) {
-      return { valid: false, brokenAt: i, reason: `prevHash mismatch at seq ${i}` };
-    }
-    const { hash, ...body } = entry;
-    if (hashEntry(body, hmacKey) !== hash) {
-      return { valid: false, brokenAt: i, reason: `content hash mismatch at seq ${i}` };
-    }
-    prevHash = hash;
-  }
-  return { valid: true };
-}
-
-/** {@link verifyChain} using Web Crypto, for edge runtimes (see {@link hashEntryAsync}). */
-export async function verifyChainAsync(
+export async function verifyChain(
   entries: AuditEntry[],
   hmacKey?: string,
 ): Promise<{ valid: boolean; brokenAt?: number; reason?: string }> {
@@ -163,7 +122,7 @@ export async function verifyChainAsync(
       return { valid: false, brokenAt: i, reason: `prevHash mismatch at seq ${i}` };
     }
     const { hash, ...body } = entry;
-    if ((await hashEntryAsync(body, hmacKey)) !== hash) {
+    if ((await hashEntry(body, hmacKey)) !== hash) {
       return { valid: false, brokenAt: i, reason: `content hash mismatch at seq ${i}` };
     }
     prevHash = hash;
@@ -188,7 +147,7 @@ export class InMemoryAuditLog implements AuditLog {
       prevHash: prev ? prev.hash : GENESIS_HASH,
       ts: input.ts ?? new Date().toISOString(),
     };
-    const entry: AuditEntry = { ...body, hash: hashEntry(body, this.hmacKey) };
+    const entry: AuditEntry = { ...body, hash: await hashEntry(body, this.hmacKey) };
     this.log.push(entry);
     return entry;
   }
@@ -244,7 +203,7 @@ export class HashChainAuditLog implements AuditLog {
       prevHash: this.prevHash,
       ts: input.ts ?? new Date().toISOString(),
     };
-    const entry: AuditEntry = { ...body, hash: hashEntry(body, this.hmacKey) };
+    const entry: AuditEntry = { ...body, hash: await hashEntry(body, this.hmacKey) };
     appendFileSync(this.path, JSON.stringify(entry) + "\n");
     this.seq += 1;
     this.prevHash = entry.hash;

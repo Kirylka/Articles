@@ -292,7 +292,7 @@ interface ToolDefinition<TParams> {
 | Area | Choice | Rationale / constraint |
 | --- | --- | --- |
 | Language/runtime | TypeScript, Node.js ≥ 20 ESM | Flue ecosystem; ship `.d.ts`. (C-8) |
-| Dependencies | Runtime primitives only (`node:crypto`, `node:fs`, `node:async_hooks`) | "Small OSS library" footprint. (C-1, C-12) |
+| Dependencies | Runtime primitives only (Web Crypto `crypto.subtle`, `node:async_hooks`; `node:fs` only in the file audit sink) | "Small OSS library" footprint, runtime-agnostic core. (C-1, C-12) |
 | Schema | Accept zod-like (`.parse`) or a function; optional | Reuse existing schemas, no hard zod dep. (C-9) |
 | Persistence | In-memory + JSONL file defaults; interfaces for the rest | In-process, no external service required. (C-1, C-10) |
 | License | MIT | As free/permissive as possible, widely trusted. (C-13) |

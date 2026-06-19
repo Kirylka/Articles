@@ -32,7 +32,7 @@ test("appends form a valid chain from genesis", async () => {
   assert.equal(e0.seq, 0);
   assert.equal(e0.prevHash, GENESIS_HASH);
   assert.equal(e1.prevHash, e0.hash);
-  assert.deepEqual(verifyChain(await log.entries()), { valid: true });
+  assert.deepEqual(await verifyChain(await log.entries()), { valid: true });
 });
 
 test("mutating a historical entry breaks verification at that seq", async () => {
@@ -45,13 +45,13 @@ test("mutating a historical entry breaks verification at that seq", async () => 
   // Tamper with the middle record's content.
   (entries[1] as AuditEntry).args = { customerId: "c-999" };
 
-  const result = verifyChain(entries);
+  const result = await verifyChain(entries);
   assert.equal(result.valid, false);
   assert.equal(result.brokenAt, 1);
 });
 
-test("hashing is independent of object key order (canonical)", () => {
-  const a = hashEntry({
+test("hashing is independent of object key order (canonical)", async () => {
+  const a = await hashEntry({
     seq: 0,
     ts: "2026-01-01T00:00:00.000Z",
     prevHash: GENESIS_HASH,
@@ -63,7 +63,7 @@ test("hashing is independent of object key order (canonical)", () => {
     requestedScopes: ["customer:c-1"],
     args: { a: 1, b: 2 },
   });
-  const b = hashEntry({
+  const b = await hashEntry({
     args: { b: 2, a: 1 },
     requestedScopes: ["customer:c-1"],
     outcome: "success",
@@ -93,7 +93,7 @@ test("file-backed log persists and reseeds the chain on reopen", async () => {
 
     const lines = readFileSync(path, "utf8").trim().split("\n");
     assert.equal(lines.length, 3);
-    assert.deepEqual(verifyChain(await log2.entries()), { valid: true });
+    assert.deepEqual(await verifyChain(await log2.entries()), { valid: true });
   } finally {
     rmSync(path, { force: true });
   }
@@ -105,12 +105,12 @@ test("hmac-keyed chain verifies only with the correct key", async () => {
   await log.append(sample("refund"));
   const entries = await log.entries();
 
-  assert.deepEqual(verifyChain(entries, "k-secret"), { valid: true });
+  assert.deepEqual(await verifyChain(entries, "k-secret"), { valid: true });
   // Without the key, or with the wrong key, verification fails at the start.
-  assert.equal(verifyChain(entries, "wrong-key").valid, false);
-  assert.equal(verifyChain(entries).valid, false);
+  assert.equal((await verifyChain(entries, "wrong-key")).valid, false);
+  assert.equal((await verifyChain(entries)).valid, false);
   // The log's own verify() uses its configured key.
-  assert.deepEqual(log.verify(), { valid: true });
+  assert.deepEqual(await log.verify(), { valid: true });
 });
 
 test("hmac-keyed file log reseeds and stays verifiable across reopen", async () => {
@@ -123,7 +123,7 @@ test("hmac-keyed file log reseeds and stays verifiable across reopen", async () 
     const log2 = new HashChainAuditLog({ path, hmacKey: "k1" });
     const next = await log2.append(sample("close"));
     assert.equal(next.prevHash, last.hash);
-    assert.deepEqual(log2.verify(), { valid: true });
+    assert.deepEqual(await log2.verify(), { valid: true });
   } finally {
     rmSync(path, { force: true });
   }
