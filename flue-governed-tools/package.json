@@ -1,0 +1,82 @@
+{
+  "name": "flue-governed-tools",
+  "version": "0.1.0",
+  "description": "In-process authorization and tamper-evident audit for Flue agent tools — stop an agent acting on the wrong resource, twice, or unrecorded.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "flue",
+    "ai-agents",
+    "agent-tools",
+    "authorization",
+    "tool-authorization",
+    "audit-log",
+    "tamper-evident",
+    "idempotency",
+    "governance",
+    "prompt-injection"
+  ],
+  "author": "Kirylka",
+  "homepage": "https://github.com/Kirylka/Articles/tree/main/flue-governed-tools#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Kirylka/Articles.git",
+    "directory": "flue-governed-tools"
+  },
+  "bugs": {
+    "url": "https://github.com/Kirylka/Articles/issues"
+  },
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    },
+    "./audit": {
+      "types": "./dist/src/audit.d.ts",
+      "import": "./dist/src/audit.js"
+    },
+    "./adapters": {
+      "types": "./dist/src/adapters.d.ts",
+      "import": "./dist/src/adapters.js"
+    },
+    "./testing": {
+      "types": "./dist/src/testing.d.ts",
+      "import": "./dist/src/testing.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist/src",
+    "src",
+    "docs",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "check": "npm run typecheck",
+    "test": "npm run build && node --test \"dist/test/**/*.test.js\"",
+    "example": "npm run build && node dist/examples/support-agent.js",
+    "spike": "npm run build && node scripts/live-faux-spike.mjs",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm run build && npm test",
+    "smoke": "bash scripts/consumer-smoke.sh",
+    "test:worker": "npm run build && node --test test/worker/worker.test.mjs"
+  },
+  "peerDependencies": {
+    "@flue/runtime": "^1.0.0-beta.1"
+  },
+  "devDependencies": {
+    "@flue/runtime": "^1.0.0-beta.2",
+    "@types/node": "^22.0.0",
+    "typescript": "^5.5.0",
+    "valibot": "^1.4.1",
+    "wrangler": "^4.102.0"
+  }
+}

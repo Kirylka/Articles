@@ -25,7 +25,7 @@ T-0 scaffold
           └─ T-9 toolkit/pipeline  (integrates T-2..T-8)
               └─ T-10 flue adapter
                   └─ T-11 public surface (index)
-                      ├─ T-12 telecom example
+                      ├─ T-12 support-agent example
                       ├─ T-13 test suite
                       └─ T-14 README + docs
 ```
@@ -144,7 +144,9 @@ T-2 … T-8 are independent of one another and may be done in parallel after T-1
 - **Objective:** Emit a Flue-compatible tool object.
 - **Deliverables:** `src/flue.ts` — shaping to `{ name, description,
   parameters, execute(args, hostCtx) }`; forward `hostCtx` to the resolver.
-- **Dependencies:** T-9; **A-1 confirmed** (current Flue tool contract).
+- **Dependencies:** T-9; **A-1 confirmed** — `@flue/runtime` `defineTool({ name,
+  description, parameters, execute })`, opaque Valibot/TypeBox `parameters`,
+  `execute(args)` single pre-parsed arg, `FlueContext` in the `run` scope.
 - **Acceptance:** Output drops into `init({ tools: [...] })`; host context
   reaches a custom resolver; core modules remain free of any Flue import.
 - **Traceability:** FR-1.2/1.4, C-2/C-3; arch §9.
@@ -157,15 +159,17 @@ T-2 … T-8 are independent of one another and may be done in parallel after T-1
   HashChainAuditLog, ... } from "flue-governed-tools"` resolves with types.
 - **Traceability:** arch §3.
 
-## T-12 — Telecom support agent example
-- **Objective:** Runnable proof of the three hero guarantees.
-- **Deliverables:** `examples/telecom-support-agent.ts` — scoped account
-  lookup, idempotent refund (approval over a threshold), ticket update; a mock
-  `init()` standing in for Flue so it runs with zero deps; prints a blocked
-  cross-tenant attempt, a replayed refund, and an audit-chain verification.
+## T-12 — Support agent example
+- **Objective:** Runnable proof of the hero guarantees, mirroring the README.
+- **Deliverables:** `examples/support-agent.ts` — a `reset_password` tool gated
+  by `authorize` (caller must control the account) and an `issue_refund` tool
+  gated by `scope` + `approval` + `idempotency`; a mock `init()` standing in for
+  Flue so it runs with zero deps; also shows the fail-closed definition guard.
 - **Dependencies:** T-11.
-- **Acceptance:** `npm run example` shows: deny on cross-tenant, single refund
-  on duplicate call, `verifyChain` → valid.
+- **Acceptance:** `npm run example` shows: ungated side-effect tool refused at
+  definition, `authorize` block on another user's account, scope deny on another
+  customer, single refund on a duplicate call, approval allow/deny, and
+  `verifyChain` → valid.
 - **Traceability:** FR-10.1; arch §1.
 
 ## T-13 — Test suite
@@ -195,4 +199,6 @@ T-2 … T-8 are independent of one another and may be done in parallel after T-1
 3. Cross-tenant action **blocked**, duplicate refund **replayed**, audit chain
    **verified** — demonstrated by the example and covered by tests.
 4. Core modules contain no Flue import (C-3 verified by inspection/test).
-5. Open assumption **A-1** (Flue tool API) resolved before T-10 is closed.
+5. Open assumption **A-1** (Flue tool API) — RESOLVED against `@flue/runtime`
+   v1.0.0-beta.1; the adapter and docs reflect the real `defineTool`/`init`
+   contract.
