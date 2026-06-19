@@ -114,6 +114,43 @@ that bit Meta: "does this admin control *this specific account*?" That's the
 authorization and the audit this library adds on top of the identity the harness
 already established — the part the IdP can't see and the model shouldn't decide.
 
+## Quickstart
+
+```bash
+npm i flue-governed-tools @flue/runtime valibot
+```
+
+```ts
+import { createAgent, defineTool } from "@flue/runtime";
+import * as v from "valibot";
+import { createGovernedToolkit, caller } from "flue-governed-tools";
+
+const gov = createGovernedToolkit({ audit: "audit.jsonl", defineTool });
+
+const resetPassword = gov.tool({
+  name: "reset_password",
+  description: "Send a password reset link.",
+  parameters: v.object({ accountId: v.string() }),
+  sideEffect: true,
+  authorize: caller((a, ctx) => owns(ctx.actor.id, a.accountId)), // the check Meta missed
+  idempotency: { key: (a) => `reset:${a.accountId}` },            // a retry won't send twice
+  execute: async (a) => { await accounts.sendResetLink(a.accountId); return "Sent."; },
+});
+
+const agent = createAgent(() => ({ model, tools: [resetPassword] }));
+
+// Bind the caller from YOUR auth (never the model), once per conversation:
+await gov.run(
+  { actor: { id: "user-7", roles: ["account_holder"] }, tenantId: "app" },
+  () => harness.prompt("I'm locked out, reset my password"),
+);
+```
+
+That's the whole thing. The tool won't even *define* without a gate; it checks
+the caller actually owns the account before sending, won't fire twice on a
+retry, and writes a tamper-evident line for every call. The rest of this README
+is why each of those matters — start with the story below.
+
 ## The fix is a wrapper
 
 The same tool, before and after — the only thing that changes is that the
@@ -407,6 +444,23 @@ copy-pasteable reference stores for Workers — a **D1**-backed `AuditLog` and a
 **KV**-backed `IdempotencyStore` (use a **Durable Object** for strict
 at-most-once under concurrency). On a runtime without a filesystem you simply
 pass a store instead of a path; nothing else changes.
+
+**One flag on Cloudflare Workers.** `ContextStore` (the backing for `gov.run`)
+uses `AsyncLocalStorage`, so on Workers enable the Node compatibility flag in
+`wrangler.toml`:
+
+```toml
+compatibility_flags = ["nodejs_compat"]
+```
+
+That's the same flag Flue itself relies on, so if Flue runs, this does too.
+`AsyncLocalStorage` is built in on Node, Deno, Bun, Lambda, and Vercel's edge
+runtime — Workers is the one that gates it behind a flag. If you'd rather not use
+`AsyncLocalStorage` at all, take the dispatched path: `gov.withContext(...)`
+binds the context per invocation with no ambient store (see *Binding context*
+above). We're deliberately not shipping a separate edge build until there's real
+demand for one — a single import that works under `nodejs_compat` is less for you
+to learn.
 
 ## Human-in-the-loop approval
 
