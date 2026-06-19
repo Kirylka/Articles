@@ -1,0 +1,54 @@
+name: flue-governed-tools CI
+
+on:
+  push:
+    paths:
+      - "flue-governed-tools/**"
+      - ".github/workflows/flue-governed-tools-ci.yml"
+  pull_request:
+    paths:
+      - "flue-governed-tools/**"
+      - ".github/workflows/flue-governed-tools-ci.yml"
+
+defaults:
+  run:
+    working-directory: flue-governed-tools
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [20, 24] # Node 20 (LTS) and current
+    name: node ${{ matrix.node }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: flue-governed-tools/package-lock.json
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm run build
+      - run: npm test
+
+  package:
+    runs-on: ubuntu-latest
+    name: package checks
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: flue-governed-tools/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      # Validate the published package: export map, types, and tarball contents.
+      - run: npx -y publint
+      # ESM-only / Node 20+ is intentional, so allow CJS require() not resolving
+      # and legacy node10 (pre-"exports") not resolving the subpaths.
+      - run: npx -y @arethetypeswrong/cli --pack --ignore-rules cjs-resolves-to-esm no-resolution
+      - run: npm pack --dry-run

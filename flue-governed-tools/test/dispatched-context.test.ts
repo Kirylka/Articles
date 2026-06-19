@@ -12,7 +12,7 @@ import {
   InMemoryIdempotencyStore,
   createGovernedToolkit,
   toFlueTool,
-} from "../src/index.js";
+} from "./_all.js";
 import { ScopeViolationError } from "../src/errors.js";
 import type { TrustedContext } from "../src/types.js";
 

@@ -13,7 +13,7 @@ import {
   caller,
   HashChainAuditLog,
   InMemoryAuditLog,
-} from "../src/index.js";
+} from "./_all.js";
 import {
   AuthorizationDeniedError,
   GovernanceConfigError,

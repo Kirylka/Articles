@@ -23,7 +23,9 @@ import {
   fauxToolCall,
 } from "@earendil-works/pi-ai";
 import * as v from "valibot";
-import { createGovernedToolkit, InMemoryAuditLog, toFlueTool } from "flue-governed-tools";
+import { createGovernedToolkit } from "flue-governed-tools";
+import { InMemoryAuditLog } from "flue-governed-tools/testing";
+import { toFlueTool } from "flue-governed-tools/adapters";
 
 async function main() {
   // 1. Faux model: deterministically calls reset_password, then stops.

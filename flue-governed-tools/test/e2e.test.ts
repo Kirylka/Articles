@@ -23,7 +23,7 @@ import {
   type AuditEntry,
   type FlueCompatibleTool,
   type TrustedContext,
-} from "../src/index.js";
+} from "./_all.js";
 import {
   AuthorizationDeniedError,
   GovernanceConfigError,

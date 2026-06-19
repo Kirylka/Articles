@@ -34,7 +34,7 @@ import {
   type IdempotencyStore,
   type FlueCompatibleTool,
   type TrustedContext,
-} from "../src/index.js";
+} from "./_all.js";
 
 const ctx: TrustedContext = {
   actor: { id: "a1", roles: ["agent"] },

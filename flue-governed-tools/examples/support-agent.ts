@@ -14,13 +14,13 @@
 
 import {
   GovernanceConfigError,
-  InMemoryAuditLog,
   createGovernedToolkit,
   caller,
   type ApprovalAdapter,
   type FlueCompatibleTool,
   type TrustedContext,
 } from "../src/index.js";
+import { InMemoryAuditLog } from "../src/testing.js";
 
 // --- Fake downstream systems with real side effects we must protect. -------
 let resetLinksSent = 0;

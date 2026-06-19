@@ -12,7 +12,7 @@ import {
   GENESIS_HASH,
   type AuditEntry,
   type AuditEntryBody,
-} from "../src/index.js";
+} from "./_all.js";
 import {
   D1AuditLog,
   KvIdempotencyStore,

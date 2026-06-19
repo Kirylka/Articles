@@ -17,10 +17,12 @@ import {
   type AuditEntryBody,
   type AuditInput,
   type AuditLog,
+} from "../src/audit.js";
+import {
   type BeginResult,
   type IdempotencyRecord,
   type IdempotencyStore,
-} from "../src/index.js";
+} from "../src/idempotency.js";
 
 // --- Minimal Cloudflare-shaped interfaces (so this file needs no CF types) ---
 
