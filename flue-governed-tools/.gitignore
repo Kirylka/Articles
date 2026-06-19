@@ -4,3 +4,4 @@ dist/
 audit*.jsonl
 .DS_Store
 *.tgz
+.wrangler/

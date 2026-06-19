@@ -11,7 +11,7 @@
  *   - `flue-governed-tools/adapters`  — default RBAC/redaction/idempotency, toFlueTool
  *   - `flue-governed-tools/testing`   — in-memory test doubles
  *
- * ESM-only. Node 20+.
+ * ESM-only. Node 22+.
  */
 
 // --- The golden path -------------------------------------------------------

@@ -54,7 +54,7 @@
     "LICENSE"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -65,7 +65,8 @@
     "spike": "npm run build && node scripts/live-faux-spike.mjs",
     "prepack": "npm run build",
     "prepublishOnly": "npm run build && npm test",
-    "smoke": "bash scripts/consumer-smoke.sh"
+    "smoke": "bash scripts/consumer-smoke.sh",
+    "test:worker": "npm run build && node --test test/worker/worker.test.mjs"
   },
   "peerDependencies": {
     "@flue/runtime": "^1.0.0-beta.1"
@@ -74,6 +75,7 @@
     "@flue/runtime": "^1.0.0-beta.1",
     "@types/node": "^22.0.0",
     "typescript": "^5.5.0",
-    "valibot": "^1.4.1"
+    "valibot": "^1.4.1",
+    "wrangler": "^4.102.0"
   }
 }

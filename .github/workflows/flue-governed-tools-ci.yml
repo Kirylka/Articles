@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        node: [20, 24] # Node 20 (LTS) and current
+        node: [22, 24] # Node 22 (LTS) and current
     name: node ${{ matrix.node }}
     steps:
       - uses: actions/checkout@v4
@@ -34,6 +34,20 @@ jobs:
       - run: npm run build
       - run: npm test
 
+  worker-runtime:
+    runs-on: ubuntu-latest
+    name: workerd runtime (nodejs_compat)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: flue-governed-tools/package-lock.json
+      - run: npm ci
+      # Boots the governance core on the real workerd runtime via wrangler.
+      - run: npm run test:worker
+
   package:
     runs-on: ubuntu-latest
     name: package checks
@@ -41,14 +55,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
           cache-dependency-path: flue-governed-tools/package-lock.json
       - run: npm ci
       - run: npm run build
       # Validate the published package: export map, types, and tarball contents.
       - run: npx -y publint
-      # ESM-only / Node 20+ is intentional, so allow CJS require() not resolving
+      # ESM-only / Node 22+ is intentional, so allow CJS require() not resolving
       # and legacy node10 (pre-"exports") not resolving the subpaths.
       - run: npx -y @arethetypeswrong/cli --pack --ignore-rules cjs-resolves-to-esm no-resolution
       - run: npm pack --dry-run
