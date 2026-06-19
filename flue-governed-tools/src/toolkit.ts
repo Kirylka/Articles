@@ -394,11 +394,16 @@ export function createGovernedToolkit(
           );
         }
       } else {
+        // `approval: false` is explicitly "no approval" and `evaluateApproval`
+        // treats it as such at runtime, so it must NOT count as a gate here —
+        // only `approval: true` or a policy function does.
+        const approvalGates =
+          spec.approval === true || typeof spec.approval === "function";
         const gated =
           Boolean(spec.scope) ||
           Boolean(spec.authorize) ||
           (spec.requireRoles?.length ?? 0) > 0 ||
-          spec.approval !== undefined;
+          approvalGates;
         if (!gated) {
           throw new GovernanceConfigError(
             spec.name,
@@ -447,141 +452,266 @@ export function createGovernedToolkit(
         ...(spec.kind === "primitive" ? { kind: "primitive" as const } : {}),
       };
 
-      // 2. Validate arguments.
-      let args: TArgs;
+      // Whether this call's outcome has already been written to the audit log.
+      // Set at each handled exit so the catch-all below records exactly the
+      // exceptions no pipeline step recorded (F5), never double-recording one.
+      let audited = false;
+      let requested: string[] = [];
+      let redactedArgs: unknown;
+
       try {
-        args = validate(rawArgs);
-      } catch (err) {
-        await audit({
-          ...base,
-          decision: "deny",
-          outcome: "denied",
-          requestedScopes: [],
-          args: redactor(rawArgs),
-          error: `invalid_arguments: ${errorCode(err)}`,
-        });
-        throw err;
-      }
-
-      const redactedArgs = redactor(args);
-      const requested = normalizeScopes(spec.scope?.(args, ctx));
-      const execCtx: ExecutionContext = {
-        ...ctx,
-        authorizedScopes: requested,
-        host: hostContext,
-        signal,
-      };
-
-      const denyAudit = (error: string, extra: Partial<AuditInput> = {}) =>
-        audit({
-          ...base,
-          decision: "deny",
-          outcome: "denied",
-          requestedScopes: requested,
-          args: redactedArgs,
-          error,
-          ...extra,
-        });
-
-      // 3. RBAC.
-      const requiredRoles = spec.requireRoles ?? [];
-      if (!(await rbac.can({ tool: spec.name, requiredRoles, ctx }))) {
-        await denyAudit("access_denied");
-        throw new AccessDeniedError(spec.name, requiredRoles);
-      }
-
-      // 4. Scope / tenant isolation.
-      const allowedScopes = ctx.scopes ?? [];
-      const denied = deniedScopes(requested, allowedScopes);
-      if (denied.length > 0) {
-        await denyAudit("scope_violation");
-        throw new ScopeViolationError(spec.name, denied, allowedScopes);
-      }
-
-      // 5. Authorization, keyed to a declared trusted anchor.
-      if (spec.authorize) {
-        const a = spec.authorize;
-        const ok =
-          a.anchor === "caller"
-            ? await a.check(args, execCtx)
-            : await a.check(
-                args,
-                await options.trustedSources![a.anchor.trustedSource]!(args, ctx),
-              );
-        if (!ok) {
-          await denyAudit("authorization_denied");
-          throw new AuthorizationDeniedError(spec.name);
-        }
-      }
-
-      // 6. Approval (only when a policy is declared and triggered).
-      let approver: string | undefined;
-      const approval = evaluateApproval(spec.approval, args, ctx);
-      if (approval.needed) {
-        if (!options.approval) {
-          await denyAudit("approval_denied");
-          throw new ApprovalDeniedError(
-            spec.name,
-            "no approval adapter configured",
-          );
-        }
-        const decision = await options.approval.request({
-          tool: spec.name,
-          args,
-          ctx,
-          reason: approval.reason,
-        });
-        if (decision.pending) {
-          // Suspend, don't block: record the deferral and let the harness pause
-          // and resume (which re-invokes the tool). No side effect runs.
+        // 2. Validate arguments.
+        let args: TArgs;
+        try {
+          args = validate(rawArgs);
+        } catch (err) {
           await audit({
             ...base,
-            decision: "defer",
-            outcome: "pending",
+            decision: "deny",
+            outcome: "denied",
+            requestedScopes: [],
+            args: redactor(rawArgs),
+            error: `invalid_arguments: ${errorCode(err)}`,
+          });
+          audited = true;
+          throw err;
+        }
+
+        redactedArgs = redactor(args);
+        requested = normalizeScopes(spec.scope?.(args, ctx));
+        const execCtx: ExecutionContext = {
+          ...ctx,
+          authorizedScopes: requested,
+          host: hostContext,
+          signal,
+        };
+
+        const denyAudit = (error: string, extra: Partial<AuditInput> = {}) => {
+          audited = true;
+          return audit({
+            ...base,
+            decision: "deny",
+            outcome: "denied",
             requestedScopes: requested,
             args: redactedArgs,
-            approver: decision.approver,
-            error: decision.ref ? `approval_pending:${decision.ref}` : undefined,
+            error,
+            ...extra,
           });
-          throw new ApprovalPendingError(
-            spec.name,
-            decision.ref,
-            decision.reason ?? approval.reason,
-          );
-        }
-        if (!decision.approved) {
-          await denyAudit("approval_denied", { approver: decision.approver });
-          throw new ApprovalDeniedError(
-            spec.name,
-            decision.reason ?? approval.reason,
-          );
-        }
-        approver = decision.approver;
-      }
+        };
 
-      // For side effects, record an intent BEFORE executing. If this append
-      // fails we throw here, so a side effect can never run unrecorded. The
-      // outcome record is written after. (Non-side-effect tools write only the
-      // single outcome record.)
-      const writeIntent = (idempotencyKey?: string): Promise<unknown> =>
-        spec.sideEffect
-          ? audit({
+        // 3. RBAC.
+        const requiredRoles = spec.requireRoles ?? [];
+        if (!(await rbac.can({ tool: spec.name, requiredRoles, ctx }))) {
+          await denyAudit("access_denied");
+          throw new AccessDeniedError(spec.name, requiredRoles);
+        }
+
+        // 4. Scope / tenant isolation.
+        const allowedScopes = ctx.scopes ?? [];
+        const denied = deniedScopes(requested, allowedScopes);
+        if (denied.length > 0) {
+          await denyAudit("scope_violation");
+          throw new ScopeViolationError(spec.name, denied, allowedScopes);
+        }
+
+        // 5. Authorization, keyed to a declared trusted anchor.
+        if (spec.authorize) {
+          const a = spec.authorize;
+          const ok =
+            a.anchor === "caller"
+              ? await a.check(args, execCtx)
+              : await a.check(
+                  args,
+                  await options.trustedSources![a.anchor.trustedSource]!(args, ctx),
+                );
+          if (!ok) {
+            await denyAudit("authorization_denied");
+            throw new AuthorizationDeniedError(spec.name);
+          }
+        }
+
+        // 6. Approval (only when a policy is declared and triggered).
+        let approver: string | undefined;
+        const approval = evaluateApproval(spec.approval, args, ctx);
+        if (approval.needed) {
+          if (!options.approval) {
+            await denyAudit("approval_denied");
+            throw new ApprovalDeniedError(
+              spec.name,
+              "no approval adapter configured",
+            );
+          }
+          const decision = await options.approval.request({
+            tool: spec.name,
+            args,
+            ctx,
+            reason: approval.reason,
+          });
+          if (decision.pending) {
+            // Suspend, don't block: record the deferral and let the harness
+            // pause and resume (which re-invokes the tool). No side effect runs.
+            await audit({
               ...base,
-              decision: "allow",
-              outcome: "executing",
+              decision: "defer",
+              outcome: "pending",
               requestedScopes: requested,
               args: redactedArgs,
+              approver: decision.approver,
+              error: decision.ref ? `approval_pending:${decision.ref}` : undefined,
+            });
+            audited = true;
+            throw new ApprovalPendingError(
+              spec.name,
+              decision.ref,
+              decision.reason ?? approval.reason,
+            );
+          }
+          if (!decision.approved) {
+            await denyAudit("approval_denied", { approver: decision.approver });
+            throw new ApprovalDeniedError(
+              spec.name,
+              decision.reason ?? approval.reason,
+            );
+          }
+          approver = decision.approver;
+        }
+
+        // For side effects, record an intent BEFORE executing. If this append
+        // fails we throw here, so a side effect can never run unrecorded. The
+        // outcome record is written after. (Non-side-effect tools write only the
+        // single outcome record.)
+        const writeIntent = (idempotencyKey?: string): Promise<unknown> =>
+          spec.sideEffect
+            ? audit({
+                ...base,
+                decision: "allow",
+                outcome: "executing",
+                requestedScopes: requested,
+                args: redactedArgs,
+                approver,
+                idempotencyKey,
+              })
+            : Promise.resolve(undefined);
+
+        const runAndAudit = async (
+          idempotencyKey?: string,
+        ): Promise<TResult> => {
+          await writeIntent(idempotencyKey);
+          try {
+            const result = await spec.execute(args, execCtx);
+            await audit({
+              ...base,
+              decision: "allow",
+              outcome: "success",
+              requestedScopes: requested,
+              args: redactedArgs,
+              result: redactor(result),
               approver,
               idempotencyKey,
-            })
-          : Promise.resolve(undefined);
+            });
+            return result;
+          } catch (err) {
+            await audit({
+              ...base,
+              decision: "allow",
+              outcome: "error",
+              requestedScopes: requested,
+              args: redactedArgs,
+              error: errorCode(err),
+              approver,
+              idempotencyKey,
+            });
+            audited = true;
+            throw err;
+          }
+        };
 
-      const runAndAudit = async (
-        idempotencyKey?: string,
-      ): Promise<TResult> => {
-        await writeIntent(idempotencyKey);
-        try {
-          const result = await spec.execute(args, execCtx);
+        // 7. Idempotency (only when declared and a store is configured).
+        const rawKey = spec.idempotency?.key(args, ctx);
+        if (rawKey) {
+          // Namespace by tool so the same key string in two different tools
+          // can't collide and cross-replay (F3). The audit keeps the raw key for
+          // readability — `tool` already disambiguates which tool it belongs to.
+          const effectiveKey = `${spec.name}:${rawKey}`;
+          const store = idempotencyStore;
+          const begin = await store.begin(
+            ctx.tenantId,
+            effectiveKey,
+            spec.idempotency?.ttlMs,
+          );
+
+          if (begin.status === "replay") {
+            await audit({
+              ...base,
+              decision: "allow",
+              outcome: "replayed",
+              requestedScopes: requested,
+              args: redactedArgs,
+              result: redactor(begin.record.result),
+              approver,
+              idempotencyKey: rawKey,
+            });
+            return begin.record.result;
+          }
+
+          if (begin.status === "in_flight") {
+            await denyAudit("idempotency_conflict", { idempotencyKey: rawKey });
+            throw new IdempotencyConflictError(spec.name, rawKey);
+          }
+
+          // status === "started".
+          try {
+            await writeIntent(rawKey);
+          } catch (err) {
+            // Intent record failed, before any side effect — release the key.
+            await store.fail(ctx.tenantId, effectiveKey);
+            throw err;
+          }
+
+          let result: TResult;
+          try {
+            result = await spec.execute(args, execCtx);
+          } catch (err) {
+            // The handler failed: the side effect did not complete, so release
+            // the key for a clean retry.
+            await store.fail(ctx.tenantId, effectiveKey);
+            await audit({
+              ...base,
+              decision: "allow",
+              outcome: "error",
+              requestedScopes: requested,
+              args: redactedArgs,
+              error: errorCode(err),
+              approver,
+              idempotencyKey: rawKey,
+            });
+            audited = true;
+            throw err;
+          }
+
+          // The handler succeeded: the external side effect HAS happened. From
+          // here we must never release the key, or a retry would duplicate it
+          // (F4). If completion can't even be recorded, leave the key in_flight
+          // so a retry is refused (a conflict) rather than silently re-run, and
+          // record the gap. True exactly-once across this window needs a
+          // transactional store or a downstream idempotency token.
+          try {
+            await store.complete(ctx.tenantId, effectiveKey, result);
+          } catch (err) {
+            await audit({
+              ...base,
+              decision: "allow",
+              outcome: "error",
+              requestedScopes: requested,
+              args: redactedArgs,
+              error: `idempotency_completion_unrecorded: ${errorCode(err)}`,
+              approver,
+              idempotencyKey: rawKey,
+            });
+            audited = true;
+            throw err;
+          }
+
           await audit({
             ...base,
             decision: "allow",
@@ -590,94 +720,34 @@ export function createGovernedToolkit(
             args: redactedArgs,
             result: redactor(result),
             approver,
-            idempotencyKey,
+            idempotencyKey: rawKey,
           });
           return result;
-        } catch (err) {
-          await audit({
-            ...base,
-            decision: "allow",
-            outcome: "error",
-            requestedScopes: requested,
-            args: redactedArgs,
-            error: errorCode(err),
-            approver,
-            idempotencyKey,
-          });
-          throw err;
-        }
-      };
-
-      // 7. Idempotency (only when declared and a store is configured).
-      const key = spec.idempotency?.key(args, ctx);
-      if (key) {
-        const store = idempotencyStore;
-        const begin = await store.begin(
-          ctx.tenantId,
-          key,
-          spec.idempotency?.ttlMs,
-        );
-
-        if (begin.status === "replay") {
-          await audit({
-            ...base,
-            decision: "allow",
-            outcome: "replayed",
-            requestedScopes: requested,
-            args: redactedArgs,
-            result: redactor(begin.record.result),
-            approver,
-            idempotencyKey: key,
-          });
-          return begin.record.result;
         }
 
-        if (begin.status === "in_flight") {
-          await denyAudit("idempotency_conflict", { idempotencyKey: key });
-          throw new IdempotencyConflictError(spec.name, key);
+        // 8. No idempotency: execute and audit.
+        return await runAndAudit();
+      } catch (err) {
+        // A governance/infrastructure step threw without recording an outcome
+        // (scope derivation, RBAC, authorize, a trusted source, an approval or
+        // idempotency-store call). Record it so "every decision is on the chain"
+        // holds, then propagate (F5).
+        if (!audited) {
+          try {
+            await audit({
+              ...base,
+              decision: "deny",
+              outcome: "error",
+              requestedScopes: requested,
+              args: redactedArgs,
+              error: `governance_error: ${errorCode(err)}`,
+            });
+          } catch {
+            // The audit sink itself is failing — don't mask the original error.
+          }
         }
-
-        // status === "started": execute once, recording completion/failure.
-        try {
-          await writeIntent(key);
-        } catch (err) {
-          // Intent record failed — release the key so it can be retried, and
-          // abort before any side effect runs.
-          await store.fail(ctx.tenantId, key);
-          throw err;
-        }
-        try {
-          const result = await spec.execute(args, execCtx);
-          await store.complete(ctx.tenantId, key, result);
-          await audit({
-            ...base,
-            decision: "allow",
-            outcome: "success",
-            requestedScopes: requested,
-            args: redactedArgs,
-            result: redactor(result),
-            approver,
-            idempotencyKey: key,
-          });
-          return result;
-        } catch (err) {
-          await store.fail(ctx.tenantId, key);
-          await audit({
-            ...base,
-            decision: "allow",
-            outcome: "error",
-            requestedScopes: requested,
-            args: redactedArgs,
-            error: errorCode(err),
-            approver,
-            idempotencyKey: key,
-          });
-          throw err;
-        }
+        throw err;
       }
-
-      // 8. No idempotency: execute and audit.
-      return runAndAudit();
     };
 
     return {

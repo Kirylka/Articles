@@ -151,7 +151,7 @@ async function main() {
   for (const en of await audit.entries()) {
     console.log(`  #${en.seq} ${en.tool} ${en.decision}/${en.outcome} actor=${en.actorId}`);
   }
-  console.log("chain:", JSON.stringify(audit.verify()));
+  console.log("chain:", JSON.stringify(await audit.verify()));
   await coordinator.shutdown?.(2000);
 }
 

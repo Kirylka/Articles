@@ -89,6 +89,25 @@ export interface FlueToolDefinition {
 }
 
 /**
+ * Coerce any handler result to the `string` Flue's contract requires. A plain
+ * `JSON.stringify` is not enough: it returns `undefined` for `undefined` (and
+ * functions), and throws on `bigint` or circular structures — any of which
+ * would violate the declared `Promise<string>`. So: strings pass through, `void`
+ * becomes `""`, normal values serialize, and anything unserializable falls back
+ * to `String(...)`.
+ */
+function toResultString(result: unknown): string {
+  if (typeof result === "string") return result;
+  if (result === undefined) return "";
+  try {
+    const json = JSON.stringify(result);
+    return json ?? String(result);
+  } catch {
+    return String(result);
+  }
+}
+
+/**
  * Adapt a governed tool into Flue's `ToolDefinition` contract: coerce the
  * handler result to the string Flue expects, and ignore Flue's `AbortSignal`
  * second argument so it is never mistaken for a context. Pass the result to
@@ -104,7 +123,7 @@ export function toFlueTool(governed: FlueCompatibleTool): FlueToolDefinition {
       // Forward Flue's AbortSignal to the handler (via the execution context),
       // without letting it be mistaken for a host context object.
       const result = await governed.execute(args, undefined, signal);
-      return typeof result === "string" ? result : JSON.stringify(result);
+      return toResultString(result);
     },
   };
 }

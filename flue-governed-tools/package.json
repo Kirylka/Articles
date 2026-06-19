@@ -45,6 +45,8 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test \"dist/test/**/*.test.js\"",
     "example": "npm run build && node dist/examples/support-agent.js",
     "spike": "npm run build && node scripts/live-faux-spike.mjs",

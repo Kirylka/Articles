@@ -10,8 +10,6 @@
  * hash is stable regardless of property insertion order.
  */
 
-import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
-import { dirname } from "node:path";
 import type { Decision, Outcome } from "./types.js";
 
 export const GENESIS_HASH = "0".repeat(64);
@@ -130,26 +128,49 @@ export async function verifyChain(
   return { valid: true };
 }
 
+/**
+ * Serialize async appends through a promise chain. `seq`/`prevHash` are read,
+ * an `await` (hashing, file I/O) happens, then the entry is committed — so two
+ * concurrent appends must not interleave or they would share a sequence and a
+ * parent hash and break the chain. Each append waits for the previous to settle.
+ */
+class AppendQueue {
+  private tail: Promise<unknown> = Promise.resolve();
+
+  run<T>(task: () => Promise<T>): Promise<T> {
+    const result = this.tail.then(task);
+    // Keep the queue moving even if this task rejects.
+    this.tail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  }
+}
+
 /** In-memory audit log, useful for tests and ephemeral runs. */
 export class InMemoryAuditLog implements AuditLog {
   private readonly log: AuditEntry[] = [];
   private readonly hmacKey?: string;
+  private readonly queue = new AppendQueue();
 
   constructor(options: { hmacKey?: string } = {}) {
     this.hmacKey = options.hmacKey;
   }
 
-  async append(input: AuditInput): Promise<AuditEntry> {
-    const prev = this.log[this.log.length - 1];
-    const body: AuditEntryBody = {
-      ...input,
-      seq: this.log.length,
-      prevHash: prev ? prev.hash : GENESIS_HASH,
-      ts: input.ts ?? new Date().toISOString(),
-    };
-    const entry: AuditEntry = { ...body, hash: await hashEntry(body, this.hmacKey) };
-    this.log.push(entry);
-    return entry;
+  append(input: AuditInput): Promise<AuditEntry> {
+    return this.queue.run(async () => {
+      const prev = this.log[this.log.length - 1];
+      const body: AuditEntryBody = {
+        ...input,
+        seq: this.log.length,
+        prevHash: prev ? prev.hash : GENESIS_HASH,
+        ts: input.ts ?? new Date().toISOString(),
+      };
+      const entry: AuditEntry = { ...body, hash: await hashEntry(body, this.hmacKey) };
+      this.log.push(entry);
+      return entry;
+    });
   }
 
   async entries(): Promise<AuditEntry[]> {
@@ -163,30 +184,55 @@ export class InMemoryAuditLog implements AuditLog {
 
 /**
  * Append-only JSONL audit log backed by a file. Each line is one
- * {@link AuditEntry}. The previous hash is tracked in memory; on startup the
- * existing file (if any) is read once to seed the chain.
+ * {@link AuditEntry}. The previous hash is tracked in memory; the existing file
+ * (if any) is read once, lazily, to seed the chain.
+ *
+ * `node:fs`/`node:path` are imported lazily (only when this class is actually
+ * used) so that importing the package on a runtime without a filesystem
+ * (Cloudflare Workers, edge) does not eagerly pull in Node built-ins. On such
+ * runtimes use a custom {@link AuditLog} sink instead of a file path.
  */
 export class HashChainAuditLog implements AuditLog {
   private readonly path: string;
   private readonly hmacKey?: string;
-  private seq: number;
-  private prevHash: string;
+  private readonly queue = new AppendQueue();
+  private seq = 0;
+  private prevHash = GENESIS_HASH;
+  private initialized = false;
+  private fsMod?: typeof import("node:fs");
+  private pathMod?: typeof import("node:path");
 
   constructor(options: { path: string; hmacKey?: string }) {
     this.path = options.path;
     this.hmacKey = options.hmacKey;
-    mkdirSync(dirname(this.path), { recursive: true });
-    const existing = this.readFile();
+  }
+
+  private async modules(): Promise<{
+    fs: typeof import("node:fs");
+    path: typeof import("node:path");
+  }> {
+    this.fsMod ??= await import("node:fs");
+    this.pathMod ??= await import("node:path");
+    return { fs: this.fsMod, path: this.pathMod };
+  }
+
+  private async ensureInit(): Promise<typeof import("node:fs")> {
+    const { fs, path } = await this.modules();
+    if (this.initialized) return fs;
+    fs.mkdirSync(path.dirname(this.path), { recursive: true });
+    const existing = this.readFile(fs);
     this.seq = existing.length;
     this.prevHash = existing.length
       ? existing[existing.length - 1]!.hash
       : GENESIS_HASH;
+    this.initialized = true;
+    return fs;
   }
 
-  private readFile(): AuditEntry[] {
+  private readFile(fs: typeof import("node:fs")): AuditEntry[] {
     let raw: string;
     try {
-      raw = readFileSync(this.path, "utf8");
+      raw = fs.readFileSync(this.path, "utf8");
     } catch {
       return [];
     }
@@ -196,25 +242,29 @@ export class HashChainAuditLog implements AuditLog {
       .map((line) => JSON.parse(line) as AuditEntry);
   }
 
-  async append(input: AuditInput): Promise<AuditEntry> {
-    const body: AuditEntryBody = {
-      ...input,
-      seq: this.seq,
-      prevHash: this.prevHash,
-      ts: input.ts ?? new Date().toISOString(),
-    };
-    const entry: AuditEntry = { ...body, hash: await hashEntry(body, this.hmacKey) };
-    appendFileSync(this.path, JSON.stringify(entry) + "\n");
-    this.seq += 1;
-    this.prevHash = entry.hash;
-    return entry;
+  append(input: AuditInput): Promise<AuditEntry> {
+    return this.queue.run(async () => {
+      const fs = await this.ensureInit();
+      const body: AuditEntryBody = {
+        ...input,
+        seq: this.seq,
+        prevHash: this.prevHash,
+        ts: input.ts ?? new Date().toISOString(),
+      };
+      const entry: AuditEntry = { ...body, hash: await hashEntry(body, this.hmacKey) };
+      fs.appendFileSync(this.path, JSON.stringify(entry) + "\n");
+      this.seq += 1;
+      this.prevHash = entry.hash;
+      return entry;
+    });
   }
 
   async entries(): Promise<AuditEntry[]> {
-    return this.readFile();
+    const { fs } = await this.modules();
+    return this.readFile(fs);
   }
 
-  verify() {
-    return verifyChain(this.readFile(), this.hmacKey);
+  async verify() {
+    return verifyChain(await this.entries(), this.hmacKey);
   }
 }

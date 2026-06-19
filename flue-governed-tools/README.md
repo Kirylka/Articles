@@ -346,7 +346,13 @@ runs and the outcome after; everything else writes a single record.
 - **Authorize** is the dynamic check a scope list can't express — "does this
   caller actually own this account?" — the gate Meta's HTS was missing.
 - **Idempotency** means a retry replays the first result instead of doing the
-  thing twice.
+  thing twice. The strength of that guarantee is the store's: the in-memory
+  default holds within one process; a store with an atomic claim (Redis,
+  Postgres) holds across instances. If a write succeeds but recording its
+  completion then fails, the key is held — not released — so a retry is *refused*
+  rather than silently duplicated. True exactly-once across that window needs a
+  transactional store or a downstream idempotency token; this never trades a
+  refusal for a duplicate.
 - **Audit** is a hash-chained record per call (two for side effects: intent +
   outcome). Edit any past line and `verifyChain()` tells you which one. Add an
   HMAC key and a from-scratch rewrite won't pass either.
@@ -379,15 +385,18 @@ createGovernedToolkit({ redaction: textRedactor((s) => redactString(s)), /* … 
 
 ## Runs wherever Flue runs
 
-No per-runtime matrix to learn. The governance semantics are byte-identical on
-Node, Cloudflare Workers, Deno, Bun, Lambda, and edge — hashing is Web Crypto
-(the one path everywhere), and context propagation is a *pattern* choice
-(`gov.run` where your code drives the prompt, `gov.withContext` where Flue
-dispatches it), not a deployment-target choice.
+No per-runtime matrix to learn. The governance *decisions* and the audit hash
+are identical on Node, Cloudflare Workers, Deno, Bun, Lambda, and edge — hashing
+is Web Crypto (`crypto.subtle`, the one path everywhere), and context
+propagation is a *pattern* choice (`gov.run` where your code drives the prompt,
+`gov.withContext` where Flue dispatches it), not a deployment-target choice.
 
-The only thing that varies is **where your records persist** — which is your
-storage decision, the same one you'd make for any database, not a runtime
-lookup. Take the file default for local/Node, or hand the toolkit a store:
+What's runtime-specific is kept out of the import path. The only built-in that
+touches `node:fs` is the file audit sink (`HashChainAuditLog` with a path), and
+it loads `node:fs` **lazily**, the first time you write — so importing the
+package on a filesystem-less runtime doesn't pull Node built-ins in. On such a
+runtime you don't take the file default; you hand the toolkit a store, and
+nothing else changes:
 
 ```ts
 createGovernedToolkit({ audit: myAuditLog, idempotencyStore: myStore, defineTool });
@@ -447,8 +456,9 @@ suspend signal).
 Two things make this safe. The pending call writes a `defer`/`pending` line to
 the audit log, so a request waiting on a human is on the record, not in limbo.
 And because the tool re-runs every check on resume, pairing approval with an
-`idempotency` key means the eventual side effect still happens exactly once,
-even though the tool was invoked twice.
+`idempotency` key keeps the eventual side effect from running twice even though
+the tool was invoked twice — to the strength of your idempotency store (see the
+note above).
 
 ## See it run
 
@@ -486,11 +496,14 @@ the exact `seq` that breaks — the guarantee, demonstrated rather than asserted
 
 ## Is this real yet
 
-It's pre-release, and honest about it. The governance behavior is covered by 90
+It's pre-release, and honest about it. The governance behavior is covered by 100
 unit and end-to-end tests, including on-disk tamper detection, the Web Crypto
-edge path with D1/KV adapters, and tests that run
-a governed tool through the actual `@flue/runtime` `defineTool` and valibot
-rather than a stand-in. It has also been run end to end through a real Flue
+edge path with D1/KV adapters, a regression suite pinning the fixes from a
+security review (gate bypasses, concurrent-append chain corruption, cross-tool
+idempotency collisions, duplicate side effects on a completion failure, and
+auditing of governance-step exceptions), and tests that run a governed tool
+through the actual `@flue/runtime` `defineTool` and valibot rather than a
+stand-in. It has also been run end to end through a real Flue
 dispatched agent turn (`npm run spike`) — proving the per-invocation binding and
 enforcement work on Flue's detached execution path, and that a denied call comes
 back to the model as a tool error. Flue's own API is still in beta (`@flue/runtime`
