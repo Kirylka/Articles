@@ -245,7 +245,12 @@ runs and the outcome after; everything else writes a single record.
   completion then fails, the key is held — not released — so a retry is *refused*
   rather than silently duplicated. True exactly-once across that window needs a
   transactional store or a downstream idempotency token; this never trades a
-  refusal for a duplicate.
+  refusal for a duplicate. One trade-off to know: an in-flight claim is released
+  only by completion or failure, so a process that **crashes mid-operation holds
+  its key** until then — recover by calling the store's `fail()` on restart, or
+  use a store with leases (TTL'd ownership) for automatic recovery. The bundled
+  in-memory store deliberately does **not** expire in-flight claims, because
+  expiring one would let a slow operation run twice.
 - **Audit** is a hash-chained record per call (two for side effects: intent +
   outcome). Edit any past line and `verifyChain()` tells you which one. Add an
   HMAC key and a from-scratch rewrite won't pass either. The file sink

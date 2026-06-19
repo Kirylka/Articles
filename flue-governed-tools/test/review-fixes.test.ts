@@ -473,3 +473,68 @@ test("M7: audited error messages are redacted", async () => {
   assert.ok(errors.some((e) => e.includes("[redacted]")), "error was redacted in the audit");
   assert.ok(!errors.some((e) => e.includes("secret-123")), "raw secret not in the audit");
 });
+
+// --- Round 4 (audit totality review) ----------------------------------------
+
+// A1: a throwing getter in a result must not break post-execution auditing —
+// the side effect already happened; the receipt must still be written.
+test("A1: a throwing getter in a result is audited as a stable marker", async () => {
+  const audit = new InMemoryAuditLog();
+  const gov = createGovernedToolkit({ context: () => ctx, audit });
+  let runs = 0;
+  const governed = gov.defineGovernedTool({
+    name: "g",
+    description: "",
+    sideEffect: true,
+    unsafeAllowUnauthorized: true,
+    execute: () => {
+      runs += 1;
+      return {
+        safe: 1,
+        get boom(): never {
+          throw new Error("getter exploded");
+        },
+      };
+    },
+  });
+  await assert.doesNotReject(() => toFlueTool(governed).execute({}));
+  assert.equal(runs, 1);
+  assert.deepEqual(await verifyChain(await audit.entries()), { valid: true });
+});
+
+test("A1: the redactor represents a throwing getter without throwing", () => {
+  const out = defaultRedactor({
+    safe: 1,
+    get boom(): never {
+      throw new Error("nope");
+    },
+  });
+  assert.doesNotThrow(() => JSON.stringify(out));
+});
+
+// A3: unsupported values must normalize identically in memory and on disk —
+// null inside arrays, omitted from objects — so the returned entry equals what
+// you get back after reopening the file.
+test("A3: unsupported values normalize the same in memory and after a file round-trip", async () => {
+  const path = join(tmpdir(), `audit-norm-${Date.now()}-${Math.random()}.jsonl`);
+  try {
+    const log = new HashChainAuditLog({ path });
+    const written = await log.append({
+      actorId: "a",
+      tenantId: "t",
+      tool: "x",
+      decision: "allow",
+      outcome: "success",
+      requestedScopes: [],
+      result: { arr: [() => {}, undefined, 1], fn: () => {}, keep: 2 } as unknown,
+    });
+    const reopened = new HashChainAuditLog({ path });
+    const reloaded = (await reopened.entries()).at(-1)!;
+    // The in-memory value and the reloaded value must agree exactly.
+    assert.deepEqual(reloaded.result, written.result);
+    assert.deepEqual(reloaded.result, { arr: [null, null, 1], keep: 2 });
+    assert.deepEqual(await verifyChain(await reopened.entries()), { valid: true });
+  } finally {
+    rmSync(path, { force: true });
+  }
+});

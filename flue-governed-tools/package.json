@@ -50,6 +50,7 @@
   "files": [
     "dist/src",
     "src",
+    "docs",
     "README.md",
     "LICENSE"
   ],

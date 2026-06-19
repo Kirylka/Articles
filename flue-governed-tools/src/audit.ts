@@ -101,15 +101,29 @@ function canonicalize(
     seen.add(value);
     let out: unknown;
     if (Array.isArray(value)) {
-      out = value.map((v) => canonicalize(v, seen, depth + 1));
+      // Match JSON array semantics: an unsupported element becomes null (never
+      // a hole/undefined), so the in-memory value equals the persisted one.
+      out = value.map((v) => {
+        const c = canonicalize(v, seen, depth + 1);
+        return c === undefined ? null : c;
+      });
     } else {
       const obj: Record<string, unknown> = {};
+      // Object.keys (not Object.entries) so reading each value can't be skipped
+      // past a throwing getter; read each one defensively and never invoke a
+      // getter twice.
       for (const key of Object.keys(value).sort()) {
-        setOwn(
-          obj,
-          key,
-          canonicalize((value as Record<string, unknown>)[key], seen, depth + 1),
-        );
+        let raw: unknown;
+        try {
+          raw = (value as Record<string, unknown>)[key];
+        } catch {
+          setOwn(obj, key, "[unreadable]"); // a getter threw — stable marker
+          continue;
+        }
+        const c = canonicalize(raw, seen, depth + 1);
+        // Match JSON object semantics: omit unsupported properties.
+        if (c === undefined) continue;
+        setOwn(obj, key, c);
       }
       out = obj;
     }

@@ -45,6 +45,24 @@ function maskString(value: string): string {
 /** Cap recursion so a pathologically deep value can't overflow the stack. */
 const MAX_DEPTH = 100;
 
+/**
+ * Assign a key as an own data property. `obj["__proto__"] = …` would set the
+ * prototype, not an own key, so the field would vanish (and could pollute);
+ * define `__proto__` explicitly. Other keys are plain assignments.
+ */
+function setOwn(obj: Record<string, unknown>, key: string, value: unknown): void {
+  if (key === "__proto__") {
+    Object.defineProperty(obj, key, {
+      value,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  } else {
+    obj[key] = value;
+  }
+}
+
 function makeWalker(
   blocked: Set<string>,
   transformString: (s: string) => string,
@@ -63,23 +81,19 @@ function makeWalker(
         out = value.map((v) => walk(v, seen, depth + 1));
       } else {
         const obj: Record<string, unknown> = {};
-        for (const [key, val] of Object.entries(value)) {
-          const next = blocked.has(key.toLowerCase())
-            ? "[redacted]"
-            : walk(val, seen, depth + 1);
-          // `obj["__proto__"] = …` would set the prototype, not an own key, so
-          // the field would vanish from the receipt (and could pollute). Define
-          // it as a plain own data property instead.
-          if (key === "__proto__") {
-            Object.defineProperty(obj, key, {
-              value: next,
-              enumerable: true,
-              writable: true,
-              configurable: true,
-            });
-          } else {
-            obj[key] = next;
+        // Object.keys (not Object.entries) so a throwing getter becomes a stable
+        // marker instead of exploding the whole walk.
+        for (const key of Object.keys(value)) {
+          let next: unknown;
+          try {
+            const val = (value as Record<string, unknown>)[key];
+            next = blocked.has(key.toLowerCase())
+              ? "[redacted]"
+              : walk(val, seen, depth + 1);
+          } catch {
+            next = "[unreadable]"; // a getter threw
           }
+          setOwn(obj, key, next);
         }
         out = obj;
       }
