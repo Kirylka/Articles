@@ -277,6 +277,21 @@ function errorCode(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+/**
+ * Await a recording side effect (an audit append, releasing an idempotency key)
+ * without letting its failure mask the real error. Recording is best-effort;
+ * enforcement is not. The outer pipeline still records what it can, and a failed
+ * recording never becomes the error the caller sees in place of the denial or
+ * handler error that actually occurred.
+ */
+async function settle(fn: () => Promise<unknown> | unknown): Promise<void> {
+  try {
+    await fn();
+  } catch {
+    /* best-effort: the original error must remain observable */
+  }
+}
+
 /** Resolve whether an approval policy is triggered for this call. */
 function evaluateApproval<TArgs>(
   policy: ApprovalPolicy<TArgs> | undefined,
@@ -479,15 +494,17 @@ export function createGovernedToolkit(
         try {
           args = validate(rawArgs);
         } catch (err) {
-          await audit({
-            ...base,
-            decision: "deny",
-            outcome: "denied",
-            requestedScopes: [],
-            args: redactor(rawArgs),
-            error: `invalid_arguments: ${errorCode(err)}`,
-          });
           audited = true;
+          await settle(
+            () => audit({
+              ...base,
+              decision: "deny",
+              outcome: "denied",
+              requestedScopes: [],
+              args: redactor(rawArgs),
+              error: `invalid_arguments: ${errorCode(err)}`,
+            }),
+          );
           throw err;
         }
 
@@ -500,17 +517,21 @@ export function createGovernedToolkit(
           signal,
         };
 
+        // Record a denial, but never let a failing audit sink mask the denial
+        // itself — the caller must still see the GovernanceError, fail-closed.
         const denyAudit = (error: string, extra: Partial<AuditInput> = {}) => {
           audited = true;
-          return audit({
-            ...base,
-            decision: "deny",
-            outcome: "denied",
-            requestedScopes: requested,
-            args: redactedArgs,
-            error,
-            ...extra,
-          });
+          return settle(
+            () => audit({
+              ...base,
+              decision: "deny",
+              outcome: "denied",
+              requestedScopes: requested,
+              args: redactedArgs,
+              error,
+              ...extra,
+            }),
+          );
         };
 
         // 3. RBAC.
@@ -564,16 +585,18 @@ export function createGovernedToolkit(
           if (decision.pending) {
             // Suspend, don't block: record the deferral and let the harness
             // pause and resume (which re-invokes the tool). No side effect runs.
-            await audit({
-              ...base,
-              decision: "defer",
-              outcome: "pending",
-              requestedScopes: requested,
-              args: redactedArgs,
-              approver: decision.approver,
-              error: decision.ref ? `approval_pending:${decision.ref}` : undefined,
-            });
             audited = true;
+            await settle(
+              () => audit({
+                ...base,
+                decision: "defer",
+                outcome: "pending",
+                requestedScopes: requested,
+                args: redactedArgs,
+                approver: decision.approver,
+                error: decision.ref ? `approval_pending:${decision.ref}` : undefined,
+              }),
+            );
             throw new ApprovalPendingError(
               spec.name,
               decision.ref,
@@ -625,17 +648,19 @@ export function createGovernedToolkit(
             });
             return result;
           } catch (err) {
-            await audit({
-              ...base,
-              decision: "allow",
-              outcome: "error",
-              requestedScopes: requested,
-              args: redactedArgs,
-              error: errorCode(err),
-              approver,
-              idempotencyKey,
-            });
             audited = true;
+            await settle(
+              () => audit({
+                ...base,
+                decision: "allow",
+                outcome: "error",
+                requestedScopes: requested,
+                args: redactedArgs,
+                error: errorCode(err),
+                approver,
+                idempotencyKey,
+              }),
+            );
             throw err;
           }
         };
@@ -688,8 +713,9 @@ export function createGovernedToolkit(
           try {
             await writeIntent(rawKey);
           } catch (err) {
-            // Intent record failed, before any side effect — release the key.
-            await store.fail(ctx.tenantId, effectiveKey);
+            // Intent record failed, before any side effect — release the key
+            // (best-effort) and surface the original error.
+            await settle(() => store.fail(ctx.tenantId, effectiveKey));
             throw err;
           }
 
@@ -698,19 +724,22 @@ export function createGovernedToolkit(
             result = await spec.execute(args, execCtx);
           } catch (err) {
             // The handler failed: the side effect did not complete, so release
-            // the key for a clean retry.
-            await store.fail(ctx.tenantId, effectiveKey);
-            await audit({
-              ...base,
-              decision: "allow",
-              outcome: "error",
-              requestedScopes: requested,
-              args: redactedArgs,
-              error: errorCode(err),
-              approver,
-              idempotencyKey: rawKey,
-            });
+            // the key for a clean retry. Releasing and recording are best-effort
+            // so the handler's own error is what propagates.
             audited = true;
+            await settle(() => store.fail(ctx.tenantId, effectiveKey));
+            await settle(
+              () => audit({
+                ...base,
+                decision: "allow",
+                outcome: "error",
+                requestedScopes: requested,
+                args: redactedArgs,
+                error: errorCode(err),
+                approver,
+                idempotencyKey: rawKey,
+              }),
+            );
             throw err;
           }
 
@@ -723,17 +752,19 @@ export function createGovernedToolkit(
           try {
             await store.complete(ctx.tenantId, effectiveKey, result);
           } catch (err) {
-            await audit({
-              ...base,
-              decision: "allow",
-              outcome: "error",
-              requestedScopes: requested,
-              args: redactedArgs,
-              error: `idempotency_completion_unrecorded: ${errorCode(err)}`,
-              approver,
-              idempotencyKey: rawKey,
-            });
             audited = true;
+            await settle(
+              () => audit({
+                ...base,
+                decision: "allow",
+                outcome: "error",
+                requestedScopes: requested,
+                args: redactedArgs,
+                error: `idempotency_completion_unrecorded: ${errorCode(err)}`,
+                approver,
+                idempotencyKey: rawKey,
+              }),
+            );
             throw err;
           }
 

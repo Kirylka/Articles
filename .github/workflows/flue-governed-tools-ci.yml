@@ -52,3 +52,6 @@ jobs:
       # and legacy node10 (pre-"exports") not resolving the subpaths.
       - run: npx -y @arethetypeswrong/cli --pack --ignore-rules cjs-resolves-to-esm no-resolution
       - run: npm pack --dry-run
+      # Install the packed tarball into a clean consumer (no dev deps) and both
+      # type-check and run it against the published exports map.
+      - run: npm run smoke

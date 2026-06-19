@@ -64,7 +64,8 @@
     "example": "npm run build && node dist/examples/support-agent.js",
     "spike": "npm run build && node scripts/live-faux-spike.mjs",
     "prepack": "npm run build",
-    "prepublishOnly": "npm run build && npm test"
+    "prepublishOnly": "npm run build && npm test",
+    "smoke": "bash scripts/consumer-smoke.sh"
   },
   "peerDependencies": {
     "@flue/runtime": "^1.0.0-beta.1"

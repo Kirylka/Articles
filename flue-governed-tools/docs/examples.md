@@ -38,7 +38,7 @@ the exact `seq` that breaks — the guarantee, demonstrated rather than asserted
 
 ## Is this real yet
 
-It's pre-release, and honest about it. The governance behavior is covered by 111
+It's pre-release, and honest about it. The governance behavior is covered by 123
 unit and end-to-end tests, including on-disk tamper detection, the Web Crypto
 edge path with D1/KV adapters, a regression suite pinning the fixes from several
 rounds of security review (gate bypasses, concurrent-append chain corruption,
@@ -46,9 +46,16 @@ cross-tool idempotency collisions and delimiter ambiguity, empty idempotency/HMA
 keys, in-flight TTL expiry, duplicate side effects on a completion failure,
 auditing of governance-step exceptions, and adversarial audit inputs —
 bigint/circular/deeply-nested/changing-getter/prototype-polluting results that
-must not break or escape the receipt), and tests that run a governed tool
-through the actual `@flue/runtime` `defineTool` and valibot rather than a
-stand-in. It has also been run end to end through a real Flue
+must not break or escape the receipt), a pipeline fault matrix (every governance
+step and every recording path made to throw, asserting the original error stays
+observable and the handler never runs on a governance failure), and tests that
+run a governed tool through the actual `@flue/runtime` `defineTool` and valibot
+rather than a stand-in.
+
+CI runs the suite on Node 20 and current, plus a package job: `publint`,
+AreTheTypesWrong, and a **packed-tarball consumer smoke test** (`npm run smoke`)
+that installs the built tarball into a clean project with only its peer deps and
+both type-checks and runs a consumer against the published `exports` map. It has also been run end to end through a real Flue
 dispatched agent turn (`npm run spike`) — proving the per-invocation binding and
 enforcement work on Flue's detached execution path, and that a denied call comes
 back to the model as a tool error. Flue's own API is still in beta (`@flue/runtime`
