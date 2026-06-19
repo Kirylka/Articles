@@ -267,3 +267,75 @@ test("F6: toFlueTool always returns a string", async () => {
   const obj = toFlueTool(make({ ok: true }));
   assert.equal(await obj.execute({}), '{"ok":true}');
 });
+
+// --- Round 2 ----------------------------------------------------------------
+
+// R1: the tool/key delimiter must be unambiguous (`${tool}:${key}` let
+// (tool "a:b", key "c") and (tool "a", key "b:c") both map to "a:b:c").
+test("R1: idempotency keys cannot collide across tools through the delimiter", async () => {
+  const toolkit = createGovernedToolkit({ context: () => ctx, audit: new InMemoryAuditLog() });
+  const t1 = toolkit.defineGovernedTool({
+    name: "a:b",
+    description: "",
+    sideEffect: true,
+    unsafeAllowUnauthorized: true,
+    idempotency: { key: () => "c" },
+    execute: () => "T1",
+  });
+  const t2 = toolkit.defineGovernedTool({
+    name: "a",
+    description: "",
+    sideEffect: true,
+    unsafeAllowUnauthorized: true,
+    idempotency: { key: () => "b:c" },
+    execute: () => "T2",
+  });
+  assert.equal(await t1.execute({}), "T1");
+  assert.equal(await t2.execute({}), "T2"); // must NOT replay T1's result
+});
+
+// R2: a non-JSON-serializable result must not break the audit. The result is
+// redacted and hash-chained *before* toFlueTool stringifies it, so the audit
+// layer itself has to tolerate bigint and circular structures.
+test("R2: a bigint result is audited safely and coerced to a string", async () => {
+  const audit = new InMemoryAuditLog();
+  const toolkit = createGovernedToolkit({ context: () => ctx, audit });
+  let runs = 0;
+  const governed = toolkit.defineGovernedTool({
+    name: "count",
+    description: "",
+    sideEffect: true,
+    unsafeAllowUnauthorized: true,
+    execute: () => {
+      runs += 1;
+      return 10n;
+    },
+  });
+  const out = await toFlueTool(governed).execute({});
+  assert.equal(typeof out, "string");
+  assert.match(out, /10/);
+  assert.equal(runs, 1);
+
+  const entries = await audit.entries();
+  assert.deepEqual(await verifyChain(entries), { valid: true });
+  // The stored entries must be JSON-serializable (the file sink writes them).
+  assert.doesNotThrow(() => JSON.stringify(entries));
+});
+
+test("R2: a circular result does not throw or corrupt the audit", async () => {
+  const audit = new InMemoryAuditLog();
+  const toolkit = createGovernedToolkit({ context: () => ctx, audit });
+  const cyclic: Record<string, unknown> = {};
+  cyclic.self = cyclic;
+  const governed = toolkit.defineGovernedTool({
+    name: "cyc",
+    description: "",
+    sideEffect: true,
+    unsafeAllowUnauthorized: true,
+    execute: () => cyclic,
+  });
+  await assert.doesNotReject(() => toFlueTool(governed).execute({}));
+  const entries = await audit.entries();
+  assert.deepEqual(await verifyChain(entries), { valid: true });
+  assert.doesNotThrow(() => JSON.stringify(entries));
+});

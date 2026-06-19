@@ -392,7 +392,10 @@ runs and the outcome after; everything else writes a single record.
   refusal for a duplicate.
 - **Audit** is a hash-chained record per call (two for side effects: intent +
   outcome). Edit any past line and `verifyChain()` tells you which one. Add an
-  HMAC key and a from-scratch rewrite won't pass either.
+  HMAC key and a from-scratch rewrite won't pass either. The file sink
+  (`HashChainAuditLog`) is **single-writer** — one process, one instance; for
+  multi-instance writers use a store-backed sink (a DB, or the D1 adapter) with
+  an atomic append.
 - **RBAC**, **approval**, and **PII redaction** are there when you want them, as
   adapters rather than the main story.
 
@@ -550,14 +553,15 @@ the exact `seq` that breaks — the guarantee, demonstrated rather than asserted
 
 ## Is this real yet
 
-It's pre-release, and honest about it. The governance behavior is covered by 100
+It's pre-release, and honest about it. The governance behavior is covered by 103
 unit and end-to-end tests, including on-disk tamper detection, the Web Crypto
-edge path with D1/KV adapters, a regression suite pinning the fixes from a
-security review (gate bypasses, concurrent-append chain corruption, cross-tool
-idempotency collisions, duplicate side effects on a completion failure, and
-auditing of governance-step exceptions), and tests that run a governed tool
-through the actual `@flue/runtime` `defineTool` and valibot rather than a
-stand-in. It has also been run end to end through a real Flue
+edge path with D1/KV adapters, a regression suite pinning the fixes from two
+rounds of security review (gate bypasses, concurrent-append chain corruption,
+cross-tool idempotency collisions and delimiter ambiguity, duplicate side
+effects on a completion failure, auditing of governance-step exceptions, and
+bigint/circular results that must not break the audit), and tests that run a
+governed tool through the actual `@flue/runtime` `defineTool` and valibot rather
+than a stand-in. It has also been run end to end through a real Flue
 dispatched agent turn (`npm run spike`) — proving the per-invocation binding and
 enforcement work on Flue's detached execution path, and that a denied call comes
 back to the model as a tool error. Flue's own API is still in beta (`@flue/runtime`

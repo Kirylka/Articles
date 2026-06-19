@@ -46,19 +46,32 @@ function makeWalker(
   blocked: Set<string>,
   transformString: (s: string) => string,
 ): Redactor {
-  const walk = (value: unknown): unknown => {
+  // Track the objects on the current path so a circular structure becomes a
+  // `[Circular]` marker instead of recursing until the stack overflows.
+  const walk = (value: unknown, seen: WeakSet<object>): unknown => {
     if (typeof value === "string") return transformString(value);
-    if (Array.isArray(value)) return value.map(walk);
+    if (Array.isArray(value)) {
+      if (seen.has(value)) return "[Circular]";
+      seen.add(value);
+      const out = value.map((v) => walk(v, seen));
+      seen.delete(value);
+      return out;
+    }
     if (value && typeof value === "object") {
+      if (seen.has(value)) return "[Circular]";
+      seen.add(value);
       const out: Record<string, unknown> = {};
       for (const [key, val] of Object.entries(value)) {
-        out[key] = blocked.has(key.toLowerCase()) ? "[redacted]" : walk(val);
+        out[key] = blocked.has(key.toLowerCase())
+          ? "[redacted]"
+          : walk(val, seen);
       }
+      seen.delete(value);
       return out;
     }
     return value;
   };
-  return walk;
+  return (value) => walk(value, new WeakSet());
 }
 
 function fieldSet(fields: Iterable<string>): Set<string> {

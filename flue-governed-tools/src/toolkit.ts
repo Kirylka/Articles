@@ -630,9 +630,11 @@ export function createGovernedToolkit(
         const rawKey = spec.idempotency?.key(args, ctx);
         if (rawKey) {
           // Namespace by tool so the same key string in two different tools
-          // can't collide and cross-replay (F3). The audit keeps the raw key for
-          // readability — `tool` already disambiguates which tool it belongs to.
-          const effectiveKey = `${spec.name}:${rawKey}`;
+          // can't collide and cross-replay (F3). JSON-encode the pair rather than
+          // joining with a delimiter, so (tool "a:b", key "c") and (tool "a", key
+          // "b:c") don't both collapse to "a:b:c". The audit keeps the raw key
+          // for readability — `tool` already disambiguates which tool it's for.
+          const effectiveKey = JSON.stringify([spec.name, rawKey]);
           const store = idempotencyStore;
           const begin = await store.begin(
             ctx.tenantId,

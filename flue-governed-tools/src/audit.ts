@@ -44,14 +44,31 @@ export interface AuditEntry {
 /** The fields of an entry that are hashed (everything except `hash`). */
 export type AuditEntryBody = Omit<AuditEntry, "hash">;
 
-/** Recursively sort object keys so serialization is deterministic. */
-function canonicalize(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonicalize);
+/**
+ * Recursively sort object keys so serialization is deterministic, and make the
+ * result total — the audit log must never throw on a value a tool happened to
+ * return. `bigint` becomes its decimal string (JSON can't represent it),
+ * functions/symbols are dropped (as `JSON.stringify` would), and circular
+ * structures are cut with a `[Circular]` marker instead of overflowing.
+ */
+function canonicalize(value: unknown, seen: WeakSet<object> = new WeakSet()): unknown {
+  if (typeof value === "bigint") return value.toString();
+  if (typeof value === "function" || typeof value === "symbol") return undefined;
+  if (Array.isArray(value)) {
+    if (seen.has(value)) return "[Circular]";
+    seen.add(value);
+    const out = value.map((v) => canonicalize(v, seen));
+    seen.delete(value);
+    return out;
+  }
   if (value && typeof value === "object") {
+    if (seen.has(value)) return "[Circular]";
+    seen.add(value);
     const sorted: Record<string, unknown> = {};
     for (const key of Object.keys(value).sort()) {
-      sorted[key] = canonicalize((value as Record<string, unknown>)[key]);
+      sorted[key] = canonicalize((value as Record<string, unknown>)[key], seen);
     }
+    seen.delete(value);
     return sorted;
   }
   return value;
@@ -167,7 +184,11 @@ export class InMemoryAuditLog implements AuditLog {
         prevHash: prev ? prev.hash : GENESIS_HASH,
         ts: input.ts ?? new Date().toISOString(),
       };
-      const entry: AuditEntry = { ...body, hash: await hashEntry(body, this.hmacKey) };
+      // Store the canonicalized body so the stored entry is always JSON-safe
+      // (bigint/circular results can't be persisted otherwise); it hashes
+      // identically since canonicalize is idempotent.
+      const hash = await hashEntry(body, this.hmacKey);
+      const entry: AuditEntry = { ...(canonicalize(body) as AuditEntryBody), hash };
       this.log.push(entry);
       return entry;
     });
@@ -191,6 +212,13 @@ export class InMemoryAuditLog implements AuditLog {
  * used) so that importing the package on a runtime without a filesystem
  * (Cloudflare Workers, edge) does not eagerly pull in Node built-ins. On such
  * runtimes use a custom {@link AuditLog} sink instead of a file path.
+ *
+ * **Single-writer.** `seq`/`prevHash` are cached in memory and appends are
+ * serialized within this instance, so this sink is safe for one process holding
+ * one instance. It does NOT coordinate across instances or processes: two
+ * writers on the same file will assign duplicate sequence numbers and break the
+ * chain. For multi-writer / multi-instance use a sink backed by a store with an
+ * atomic append (a database, or the D1 reference adapter), not a shared file.
  */
 export class HashChainAuditLog implements AuditLog {
   private readonly path: string;
@@ -251,7 +279,11 @@ export class HashChainAuditLog implements AuditLog {
         prevHash: this.prevHash,
         ts: input.ts ?? new Date().toISOString(),
       };
-      const entry: AuditEntry = { ...body, hash: await hashEntry(body, this.hmacKey) };
+      // Store the canonicalized body so the persisted line is always JSON-safe
+      // (bigint/circular results can't be written otherwise); it hashes
+      // identically since canonicalize is idempotent.
+      const hash = await hashEntry(body, this.hmacKey);
+      const entry: AuditEntry = { ...(canonicalize(body) as AuditEntryBody), hash };
       fs.appendFileSync(this.path, JSON.stringify(entry) + "\n");
       this.seq += 1;
       this.prevHash = entry.hash;
