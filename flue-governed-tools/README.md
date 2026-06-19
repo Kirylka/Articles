@@ -50,6 +50,73 @@ Short version: Flue decides what the agent can do. This decides who it's allowed
 to do it to, whether it's safe to do twice, and whether you can prove what it
 did.
 
+## How it fits together
+
+The pieces stack. Identity is established once, up top, by something that already
+knows who the human is; it flows down into the trusted context, and every tool
+call is decided against it.
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│  Identity provider · Okta / Entra / Anthropic Enterprise-Managed Auth  │
+│  verifies the human, issues groups + brokered credentials              │
+└────────────────────────────────┬───────────────────────────────────────┘
+                                  │  verified identity + groups
+                                  ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│  Your authenticated request · the Flue harness                         │
+│  maps IdP identity → TrustedContext, binds it for the turn             │
+│  gov.run({ actor, tenantId }, …)   ·   gov.withContext(trusted)        │
+└────────────────────────────────┬───────────────────────────────────────┘
+                                  │  TrustedContext (out of the model's reach)
+                                  ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│  Governed tool · this library                                          │
+│  validate → RBAC → scope → authorize → approval → idempotency → exec   │
+│       model supplies the args  ──────►  context decides who may act     │
+└────────────────────────────────┬───────────────────────────────────────┘
+                                  │  every decision, hash-chained
+                                  ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│  Tamper-evident audit · hash-chained JSONL / D1 / your own sink        │
+└──────────────────────────────────────────────────────────────────────┘
+
+   underneath it all — the substrate (Cloudflare / Vercel / your cloud):
+   egress allowlists, credential brokering, sandbox isolation. That's what
+   actually contains a "primitive" tool; this library attests to it and
+   flags it (see below), but doesn't enforce it.
+```
+
+**Identity comes from the harness, never the model.** The top box is not part of
+this library, and that's the point. Whatever already authenticates your
+users — Okta or Entra groups, or Anthropic's Enterprise-Managed Auth provisioning
+the connection through your IdP — is the source of truth for *who the caller is*.
+You map its verified claims into the trusted context once, at the start of the
+turn, and the model never gets a say in it:
+
+```ts
+// Map your IdP's verified claims into the trusted context. None of this
+// comes from the conversation — the model can't read it and can't set it.
+await gov.run(
+  {
+    actor: {
+      id: session.user.sub,         // verified subject
+      roles: session.user.groups,   // Okta / Entra groups → roles
+    },
+    tenantId: session.org.id,
+    scopes: session.entitlements,    // coarse grants the IdP already knows
+  },
+  () => harness.prompt(userMessage),
+);
+```
+
+An IdP gives you coarse identity: *this person is in the `account_admin` group*.
+That maps straight onto RBAC — `requireRoles: ["account_admin"]` checks a group
+before the tool runs. What an IdP group *can't* express is the per-call question
+that bit Meta: "does this admin control *this specific account*?" That's the
+authorization and the audit this library adds on top of the identity the harness
+already established — the part the IdP can't see and the model shouldn't decide.
+
 ## The fix is a wrapper
 
 Here's a support tool on plain Flue. It resets a password:
@@ -391,7 +458,7 @@ side effect never runs, and the refusal surfaces to the model as a tool error).
 
 ## Is this real yet
 
-It's pre-release, and honest about it. The governance behavior is covered by 87
+It's pre-release, and honest about it. The governance behavior is covered by 90
 unit and end-to-end tests, including on-disk tamper detection, the Web Crypto
 edge path with D1/KV adapters, and tests that run
 a governed tool through the actual `@flue/runtime` `defineTool` and valibot
