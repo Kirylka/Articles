@@ -128,9 +128,13 @@ export class KvIdempotencyStore implements IdempotencyStore {
   async begin(tenantId: string, key: string, ttlMs?: number): Promise<BeginResult> {
     const id = this.id(tenantId, key);
     const existing = await this.read(id);
-    if (existing && !this.expired(existing)) {
-      if (existing.status === "completed") return { status: "replay", record: existing };
+    if (existing) {
+      // In-flight claims never expire by TTL (see InMemoryIdempotencyStore):
+      // expiring one would let a slow operation run twice.
       if (existing.status === "in_flight") return { status: "in_flight", record: existing };
+      if (!this.expired(existing) && existing.status === "completed") {
+        return { status: "replay", record: existing };
+      }
     }
     const record: IdempotencyRecord = {
       key,

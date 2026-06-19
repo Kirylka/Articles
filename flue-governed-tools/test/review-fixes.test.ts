@@ -25,6 +25,8 @@ import {
   HashChainAuditLog,
   InMemoryIdempotencyStore,
   verifyChain,
+  hashEntry,
+  defaultRedactor,
   toFlueTool,
   caller,
   GovernanceConfigError,
@@ -338,4 +340,136 @@ test("R2: a circular result does not throw or corrupt the audit", async () => {
   const entries = await audit.entries();
   assert.deepEqual(await verifyChain(entries), { valid: true });
   assert.doesNotThrow(() => JSON.stringify(entries));
+});
+
+// --- Round 3 (DX / hardening review) ----------------------------------------
+
+// H1: an idempotency policy that yields an empty key must be rejected, not
+// silently treated as "no idempotency" (which let the side effect run twice).
+test("H1: an empty idempotency key is rejected, not silently skipped", async () => {
+  let sideEffects = 0;
+  const gov = createGovernedToolkit({ context: () => ctx, audit: new InMemoryAuditLog() });
+  const tool = gov.defineGovernedTool({
+    name: "pay",
+    description: "",
+    sideEffect: true,
+    unsafeAllowUnauthorized: true,
+    idempotency: { key: () => "" },
+    execute: () => {
+      sideEffects += 1;
+      return "ok";
+    },
+  });
+  await assert.rejects(() => tool.execute({}), GovernanceConfigError);
+  await assert.rejects(() => tool.execute({}), GovernanceConfigError);
+  assert.equal(sideEffects, 0, "the side effect must not run when the key is invalid");
+});
+
+// H2: a slow (in-flight) operation must not be released by TTL — that would let
+// it execute twice. Only completed/failed records honor the TTL.
+test("H2: an in-flight idempotency record never expires by TTL", async () => {
+  let now = 0;
+  const store = new InMemoryIdempotencyStore({ clock: () => now });
+  assert.equal((await store.begin("t", "k", 100)).status, "started");
+  now = 10_000; // far past the TTL
+  assert.equal((await store.begin("t", "k", 100)).status, "in_flight");
+});
+
+// M3: a pathologically deep result must not overflow the audit normalizer.
+test("M3: a deeply nested result is audited without overflowing", async () => {
+  const audit = new InMemoryAuditLog();
+  const gov = createGovernedToolkit({ context: () => ctx, audit });
+  let deep: unknown = { leaf: true };
+  for (let i = 0; i < 50_000; i++) deep = { next: deep };
+  let runs = 0;
+  const governed = gov.defineGovernedTool({
+    name: "deep",
+    description: "",
+    sideEffect: true,
+    unsafeAllowUnauthorized: true,
+    execute: () => {
+      runs += 1;
+      return deep;
+    },
+  });
+  await assert.doesNotReject(() => toFlueTool(governed).execute({}));
+  assert.equal(runs, 1);
+  assert.deepEqual(await verifyChain(await audit.entries()), { valid: true });
+});
+
+// M4: hostile property names must survive into the receipt as own properties,
+// without polluting Object.prototype or vanishing.
+test("M4: __proto__ / constructor / prototype survive redaction as own keys", () => {
+  const hostile = JSON.parse(
+    '{"__proto__":{"polluted":true},"constructor":"c","prototype":"p","safe":1}',
+  );
+  const out = defaultRedactor(hostile) as Record<string, unknown>;
+  assert.ok(Object.prototype.hasOwnProperty.call(out, "__proto__"), "__proto__ kept");
+  assert.ok(Object.prototype.hasOwnProperty.call(out, "constructor"), "constructor kept");
+  assert.ok(Object.prototype.hasOwnProperty.call(out, "prototype"), "prototype kept");
+  assert.equal(out.safe, 1);
+  assert.equal(({} as Record<string, unknown>).polluted, undefined, "no prototype pollution");
+});
+
+// M5: the body is normalized exactly once, so a getter that returns changing
+// values can't make the hashed value differ from the stored value.
+test("M5: a changing getter cannot break the chain (normalize once)", async () => {
+  const log = new InMemoryAuditLog();
+  let n = 0;
+  await log.append({
+    actorId: "a",
+    tenantId: "t",
+    tool: "x",
+    decision: "allow",
+    outcome: "success",
+    requestedScopes: [],
+    result: {
+      get v() {
+        return ++n;
+      },
+    } as unknown,
+  } as AuditInput);
+  assert.deepEqual(await verifyChain(await log.entries()), { valid: true });
+});
+
+// M6: an empty HMAC key is a misconfiguration (e.g. an unset env var), not a
+// request for unkeyed hashing.
+test("M6: an empty HMAC key is rejected, not treated as unkeyed", async () => {
+  const body = {
+    seq: 0,
+    ts: "2026-01-01T00:00:00.000Z",
+    prevHash: "0".repeat(64),
+    actorId: "a",
+    tenantId: "t",
+    tool: "x",
+    decision: "allow" as const,
+    outcome: "success" as const,
+    requestedScopes: [],
+  };
+  await assert.rejects(() => hashEntry(body, ""));
+  assert.throws(() => new InMemoryAuditLog({ hmacKey: "" }));
+  assert.throws(() => new HashChainAuditLog({ path: "unused.jsonl", hmacKey: "" }));
+});
+
+// M7: error strings flow through the redactor before being written, so a secret
+// that leaks into an exception message isn't recorded verbatim.
+test("M7: audited error messages are redacted", async () => {
+  const audit = new InMemoryAuditLog();
+  const redaction = (v: unknown) =>
+    typeof v === "string" ? v.replace(/secret-\d+/g, "[redacted]") : v;
+  const gov = createGovernedToolkit({ context: () => ctx, audit, redaction });
+  const tool = gov.defineGovernedTool({
+    name: "boom",
+    description: "",
+    sideEffect: true,
+    unsafeAllowUnauthorized: true,
+    execute: () => {
+      throw new Error("leaked authorization token secret-123");
+    },
+  });
+  // The thrown error is untouched; only the audit copy is redacted.
+  await assert.rejects(() => tool.execute({}), /secret-123/);
+  const errors = (await audit.entries()).map((e) => e.error ?? "");
+  assert.ok(errors.some((e) => e.includes("[redacted]")), "error was redacted in the audit");
+  assert.ok(!errors.some((e) => e.includes("secret-123")), "raw secret not in the audit");
 });

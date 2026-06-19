@@ -131,7 +131,12 @@ export interface GovernedToolSpec<TArgs, TResult> {
    * See {@link AuthorizeSpec}.
    */
   authorize?: AuthorizeSpec<TArgs>;
-  /** Idempotency policy for side-effectful writes. */
+  /**
+   * Idempotency policy for side-effectful writes. `key` must return a stable,
+   * non-empty string (an empty key is rejected, not treated as "no
+   * idempotency"). The key is recorded in the audit log for correlation, so it
+   * must not embed secrets — unlike args/results, it is not redacted.
+   */
   idempotency?: {
     key: (args: TArgs, ctx: TrustedContext) => string;
     ttlMs?: number;
@@ -418,7 +423,16 @@ export function createGovernedToolkit(
     const validate = makeValidator(spec.parameters);
     const redactor = spec.redact ?? baseRedactor;
     const audit = (input: AuditInput) =>
-      auditLog.append({ ...input, ts: input.ts ?? timestamp() });
+      auditLog.append({
+        ...input,
+        ts: input.ts ?? timestamp(),
+        // Run error strings through the same redactor as args/results — an
+        // exception message can carry a secret the handler touched. (Fixed
+        // governance codes like "scope_violation" pass through unchanged.)
+        ...(typeof input.error === "string"
+          ? { error: String(redactor(input.error)) }
+          : {}),
+      });
 
     const execute = async (
       rawArgs: unknown,
@@ -626,9 +640,18 @@ export function createGovernedToolkit(
           }
         };
 
-        // 7. Idempotency (only when declared and a store is configured).
-        const rawKey = spec.idempotency?.key(args, ctx);
-        if (rawKey) {
+        // 7. Idempotency (only when a policy is declared).
+        if (spec.idempotency) {
+          const rawKey = spec.idempotency.key(args, ctx);
+          // An empty key must be rejected, never treated as "no idempotency" —
+          // that silently let the side effect run on every retry.
+          if (typeof rawKey !== "string" || rawKey.length === 0) {
+            throw new GovernanceConfigError(
+              spec.name,
+              `idempotency.key for "${spec.name}" produced an empty key. Return a ` +
+                "stable, non-empty key, or omit idempotency for this tool.",
+            );
+          }
           // Namespace by tool so the same key string in two different tools
           // can't collide and cross-replay (F3). JSON-encode the pair rather than
           // joining with a delimiter, so (tool "a:b", key "c") and (tool "a", key

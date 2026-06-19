@@ -11,8 +11,42 @@
  */
 
 import type { Decision, Outcome } from "./types.js";
+import { GovernanceConfigError } from "./errors.js";
 
 export const GENESIS_HASH = "0".repeat(64);
+
+/** Cap recursion so a pathologically deep value can't overflow the stack. */
+const MAX_DEPTH = 100;
+const DEPTH_MARKER = "[Depth limit exceeded]";
+
+/**
+ * Assign a normalized key as an own data property. A plain `out["__proto__"] =`
+ * would set the prototype (the key would vanish from the receipt and could
+ * pollute), so define `__proto__` explicitly; other keys are plain assignments.
+ */
+function setOwn(out: Record<string, unknown>, key: string, value: unknown): void {
+  if (key === "__proto__") {
+    Object.defineProperty(out, key, {
+      value,
+      enumerable: true,
+      writable: true,
+      configurable: true,
+    });
+  } else {
+    out[key] = value;
+  }
+}
+
+/** Reject an empty HMAC key (a common misconfiguration, e.g. an unset env var). */
+function assertHmacKey(hmacKey?: string): void {
+  if (hmacKey === "") {
+    throw new GovernanceConfigError(
+      "audit",
+      "hmacKey must be a non-empty string. Set a real key, or omit it for " +
+        "unkeyed SHA-256 — an empty key is almost always an unset env var.",
+    );
+  }
+}
 
 /** A single, immutable record of a governed tool call. */
 export interface AuditEntry {
@@ -51,25 +85,36 @@ export type AuditEntryBody = Omit<AuditEntry, "hash">;
  * functions/symbols are dropped (as `JSON.stringify` would), and circular
  * structures are cut with a `[Circular]` marker instead of overflowing.
  */
-function canonicalize(value: unknown, seen: WeakSet<object> = new WeakSet()): unknown {
+function canonicalize(
+  value: unknown,
+  seen: WeakSet<object> = new WeakSet(),
+  depth = 0,
+): unknown {
   if (typeof value === "bigint") return value.toString();
   if (typeof value === "function" || typeof value === "symbol") return undefined;
-  if (Array.isArray(value)) {
-    if (seen.has(value)) return "[Circular]";
-    seen.add(value);
-    const out = value.map((v) => canonicalize(v, seen));
-    seen.delete(value);
-    return out;
-  }
+  // Non-finite numbers aren't JSON-representable (JSON.stringify emits null);
+  // normalize them now so the in-memory and persisted values match exactly.
+  if (typeof value === "number" && !Number.isFinite(value)) return null;
   if (value && typeof value === "object") {
     if (seen.has(value)) return "[Circular]";
+    if (depth >= MAX_DEPTH) return DEPTH_MARKER;
     seen.add(value);
-    const sorted: Record<string, unknown> = {};
-    for (const key of Object.keys(value).sort()) {
-      sorted[key] = canonicalize((value as Record<string, unknown>)[key], seen);
+    let out: unknown;
+    if (Array.isArray(value)) {
+      out = value.map((v) => canonicalize(v, seen, depth + 1));
+    } else {
+      const obj: Record<string, unknown> = {};
+      for (const key of Object.keys(value).sort()) {
+        setOwn(
+          obj,
+          key,
+          canonicalize((value as Record<string, unknown>)[key], seen, depth + 1),
+        );
+      }
+      out = obj;
     }
     seen.delete(value);
-    return sorted;
+    return out;
   }
   return value;
 }
@@ -92,7 +137,17 @@ export async function hashEntry(
   body: AuditEntryBody,
   hmacKey?: string,
 ): Promise<string> {
-  const data = new TextEncoder().encode(JSON.stringify(canonicalize(body)));
+  assertHmacKey(hmacKey);
+  return hashCanonical(canonicalize(body), hmacKey);
+}
+
+/**
+ * Hash an already-canonicalized value. Used internally so the log can normalize
+ * a body exactly once, then both hash and persist that same immutable value —
+ * never reading a getter (or any mutable source) twice.
+ */
+async function hashCanonical(canonical: unknown, hmacKey?: string): Promise<string> {
+  const data = new TextEncoder().encode(JSON.stringify(canonical));
   const subtle = globalThis.crypto.subtle;
   if (hmacKey) {
     const key = await subtle.importKey(
@@ -172,6 +227,7 @@ export class InMemoryAuditLog implements AuditLog {
   private readonly queue = new AppendQueue();
 
   constructor(options: { hmacKey?: string } = {}) {
+    assertHmacKey(options.hmacKey);
     this.hmacKey = options.hmacKey;
   }
 
@@ -184,11 +240,13 @@ export class InMemoryAuditLog implements AuditLog {
         prevHash: prev ? prev.hash : GENESIS_HASH,
         ts: input.ts ?? new Date().toISOString(),
       };
-      // Store the canonicalized body so the stored entry is always JSON-safe
-      // (bigint/circular results can't be persisted otherwise); it hashes
-      // identically since canonicalize is idempotent.
-      const hash = await hashEntry(body, this.hmacKey);
-      const entry: AuditEntry = { ...(canonicalize(body) as AuditEntryBody), hash };
+      // Normalize exactly once, then hash and store that same value: the stored
+      // entry is JSON-safe (bigint/circular/deep results can't be persisted
+      // otherwise) and can never disagree with its own hash (a getter is read
+      // once).
+      const normalized = canonicalize(body) as AuditEntryBody;
+      const hash = await hashCanonical(normalized, this.hmacKey);
+      const entry: AuditEntry = { ...normalized, hash };
       this.log.push(entry);
       return entry;
     });
@@ -231,6 +289,7 @@ export class HashChainAuditLog implements AuditLog {
   private pathMod?: typeof import("node:path");
 
   constructor(options: { path: string; hmacKey?: string }) {
+    assertHmacKey(options.hmacKey);
     this.path = options.path;
     this.hmacKey = options.hmacKey;
   }
@@ -279,11 +338,11 @@ export class HashChainAuditLog implements AuditLog {
         prevHash: this.prevHash,
         ts: input.ts ?? new Date().toISOString(),
       };
-      // Store the canonicalized body so the persisted line is always JSON-safe
-      // (bigint/circular results can't be written otherwise); it hashes
-      // identically since canonicalize is idempotent.
-      const hash = await hashEntry(body, this.hmacKey);
-      const entry: AuditEntry = { ...(canonicalize(body) as AuditEntryBody), hash };
+      // Normalize exactly once, then hash and persist that same value (see the
+      // note on InMemoryAuditLog.append).
+      const normalized = canonicalize(body) as AuditEntryBody;
+      const hash = await hashCanonical(normalized, this.hmacKey);
+      const entry: AuditEntry = { ...normalized, hash };
       fs.appendFileSync(this.path, JSON.stringify(entry) + "\n");
       this.seq += 1;
       this.prevHash = entry.hash;

@@ -42,36 +42,53 @@ function maskString(value: string): string {
  * and apply `transformString` to every string value, recursing into objects
  * and arrays. The input is never mutated.
  */
+/** Cap recursion so a pathologically deep value can't overflow the stack. */
+const MAX_DEPTH = 100;
+
 function makeWalker(
   blocked: Set<string>,
   transformString: (s: string) => string,
 ): Redactor {
   // Track the objects on the current path so a circular structure becomes a
-  // `[Circular]` marker instead of recursing until the stack overflows.
-  const walk = (value: unknown, seen: WeakSet<object>): unknown => {
+  // `[Circular]` marker instead of recursing until the stack overflows; cap
+  // depth for the same reason.
+  const walk = (value: unknown, seen: WeakSet<object>, depth: number): unknown => {
     if (typeof value === "string") return transformString(value);
-    if (Array.isArray(value)) {
-      if (seen.has(value)) return "[Circular]";
-      seen.add(value);
-      const out = value.map((v) => walk(v, seen));
-      seen.delete(value);
-      return out;
-    }
     if (value && typeof value === "object") {
       if (seen.has(value)) return "[Circular]";
+      if (depth >= MAX_DEPTH) return "[Depth limit exceeded]";
       seen.add(value);
-      const out: Record<string, unknown> = {};
-      for (const [key, val] of Object.entries(value)) {
-        out[key] = blocked.has(key.toLowerCase())
-          ? "[redacted]"
-          : walk(val, seen);
+      let out: unknown;
+      if (Array.isArray(value)) {
+        out = value.map((v) => walk(v, seen, depth + 1));
+      } else {
+        const obj: Record<string, unknown> = {};
+        for (const [key, val] of Object.entries(value)) {
+          const next = blocked.has(key.toLowerCase())
+            ? "[redacted]"
+            : walk(val, seen, depth + 1);
+          // `obj["__proto__"] = …` would set the prototype, not an own key, so
+          // the field would vanish from the receipt (and could pollute). Define
+          // it as a plain own data property instead.
+          if (key === "__proto__") {
+            Object.defineProperty(obj, key, {
+              value: next,
+              enumerable: true,
+              writable: true,
+              configurable: true,
+            });
+          } else {
+            obj[key] = next;
+          }
+        }
+        out = obj;
       }
       seen.delete(value);
       return out;
     }
     return value;
   };
-  return (value) => walk(value, new WeakSet());
+  return (value) => walk(value, new WeakSet(), 0);
 }
 
 function fieldSet(fields: Iterable<string>): Set<string> {

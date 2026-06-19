@@ -38,15 +38,17 @@ the exact `seq` that breaks — the guarantee, demonstrated rather than asserted
 
 ## Is this real yet
 
-It's pre-release, and honest about it. The governance behavior is covered by 104
+It's pre-release, and honest about it. The governance behavior is covered by 111
 unit and end-to-end tests, including on-disk tamper detection, the Web Crypto
-edge path with D1/KV adapters, a regression suite pinning the fixes from two
+edge path with D1/KV adapters, a regression suite pinning the fixes from several
 rounds of security review (gate bypasses, concurrent-append chain corruption,
-cross-tool idempotency collisions and delimiter ambiguity, duplicate side
-effects on a completion failure, auditing of governance-step exceptions, and
-bigint/circular results that must not break the audit), and tests that run a
-governed tool through the actual `@flue/runtime` `defineTool` and valibot rather
-than a stand-in. It has also been run end to end through a real Flue
+cross-tool idempotency collisions and delimiter ambiguity, empty idempotency/HMAC
+keys, in-flight TTL expiry, duplicate side effects on a completion failure,
+auditing of governance-step exceptions, and adversarial audit inputs —
+bigint/circular/deeply-nested/changing-getter/prototype-polluting results that
+must not break or escape the receipt), and tests that run a governed tool
+through the actual `@flue/runtime` `defineTool` and valibot rather than a
+stand-in. It has also been run end to end through a real Flue
 dispatched agent turn (`npm run spike`) — proving the per-invocation binding and
 enforcement work on Flue's detached execution path, and that a denied call comes
 back to the model as a tool error. Flue's own API is still in beta (`@flue/runtime`
